@@ -530,6 +530,7 @@ void BamProcessor::verify_chromosomes(const std::vector<std::string>& chroms, co
 }
 
 
+
 void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string& region_file, const std::string& fasta_file,
 				   const std::map<std::string, std::string>& rg_to_sample, const std::map<std::string, std::string>& rg_to_library, const std::string& full_command,
 				   BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, const std::string& chrom){
@@ -555,6 +556,74 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
 
   // Add the chromosome information to the VCF
   init_output_vcf(fasta_file, chroms, full_command);
+
+  /**
+ * pipeline code begins
+ */
+
+  tf::Executor executor(num_threads);
+  tf::Taskflow taskflow;
+
+  std::vector<Region> regions;
+  readRegions(region_file, max_regions, chrom, regions, full_logger());
+  orderRegions(regions);
+
+  std::atomic<size_t> next_region{0};
+  std::mutex reader_mutex;
+  std::mutex writer_mutex;
+  std::map<std::string, std::string> chrom_cache;
+  
+  tf::Pipeline pl(
+    num_threads,
+
+    tf::Pipe{tf::PipeType::SERIAL [&](tf::Pipeflow& pf){
+      size_t idx = next_region++;
+      if(idx >= regions.size()) {
+        pf.stop();
+        return;
+      }
+
+      auto* item = new RegionWorkItem(RegionGroup(regions[idx]));
+
+      //load chrom seq if needed, lock reader, SetRegion + read_and_filter_reads, populate item
+      pf.token() = reinterpret_cast<intptr_t>(item);
+    }},
+
+    tf::Pipe{tf::PipeType::PARALLEL [&](tf::Pipeflow& pf) {
+      auto* item = reinterpret_cast<RegionWorkItem*>(pf.token());
+      auto* result = new RegionResult();
+      process_region_item(*item, *result);
+      delete item;
+      pf.token() = reinterpret_cast<intptr_t>(result);
+    }},
+
+    tf::Pipe{tf::PipeType::SERIAL [&](tf::Pipeflow& pf) {
+      auto* result = reinterpret_cast<RegionResult*>(pf.token());
+      write_regino_result(*result);
+      delete result;
+    }}
+  );
+
+  taskflow.composed_of(pl);
+  executor.run(taskflow).wait();
+
+  //make region work item
+
+  nool BamProcessor::make_region_work_item(
+    BamCramMultiReader& reader,
+    const std::map<std::string, std::string>& rg_to_sample,
+    const std::map<std::string, std::string>& rg_to_library,
+    const Region& region,
+    const std::string& chrom_seq,
+    BamWriter* pass_writer,
+    BamWriter* filt_writer,
+    RegionWorkItem& item) {
+      
+    }
+ /**
+  * pipeline code ends
+  */
+
 
   std::string cur_chrom = "", chrom_seq = "";
   for (auto region_iter = regions.begin(); region_iter != regions.end(); region_iter++){

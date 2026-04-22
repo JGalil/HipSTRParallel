@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <taskflow>
 
 #include "bam_io.h"
 #include "base_quality.h"
@@ -198,6 +199,23 @@ class BamProcessor {
     bool has_viz = false;
     bool has_stutter = false;
   };
+
+  virtual bool make_region_work_item(
+    BamCramMultiReader& reader,
+    const std::map<std::string, std::string>& rg_to_sample,
+    const std::map<std::string, std::string>& rg_to_library,
+    const Region& region,
+    const std::string& chrom_seq,
+    BamWriter* pass_writer,
+    BamWriter* filt_writer,
+    RegionWorkItem& item) = 0;
+
+  virtual void process_region_item(
+    RegionWorkItem& item,
+    RegionResult& result) = 0;
+
+  virtual void write_regino_result(
+    const RegionResult& result) = 0;
 };
 
 #endif
