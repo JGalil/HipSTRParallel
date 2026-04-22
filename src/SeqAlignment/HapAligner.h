@@ -80,6 +80,32 @@ class HapAligner {
    **/
   int calc_seed_base(const Alignment& alignment);
 
+  /**
+   * Beginning of attempting to implement read-parallelism here
+   * 
+   * alignments: full vector of reads or pooled reads to align
+   * begin: first index in alignments this call should handle
+   * end -> end-1 is last index handled
+   * init_read_index: offset into global output arrays
+   * base_quality: lookup object to convert quality characters into log-probs
+   * realign_read: boolean vector, if false, skip that read
+   * aln_probs: output buffer storing per-read, per-haplotype alignment likelihoods
+   * for read i: block starts at aln_probs + i * fw_haplotype_->num_combs()
+   * seed_positions: output bugger storing chosen seed base for each read
+   * 
+   * Gives each worker different subrange to work on, while aln_probs and seed_positions are shared
+   * but each worker can only write to its corresponding sections
+   */
+
+   void process_reads_range(const std::vector<Alignment>& alignments,
+                            int begin,
+                            int end,
+                            int init_read_index,
+                            const BaseQuality* base_quality,
+                            const std::vector<bool>& realign_read,
+                            double* aln_probs,
+                            int* seed_positions);
+
   void process_read(const Alignment& aln, int seed_base, const BaseQuality* base_quality, bool retrace_aln,
 		    double* prob_ptr, AlignmentTrace& traced_aln);
 

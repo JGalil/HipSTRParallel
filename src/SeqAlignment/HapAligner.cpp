@@ -317,29 +317,56 @@ int HapAligner::calc_seed_base(const Alignment& aln){
   return best_seed;
 }
 
+/**
+ * Changed process_read(...) to delegate to process_reads_range(...) to avoid having to go through renaming a whole 
+ * bunch of stuff
+ */
+
 void HapAligner::process_reads(const std::vector<Alignment>& alignments, int init_read_index, const BaseQuality* base_quality, const std::vector<bool>& realign_read,
 			       double* aln_probs, int* seed_positions){
-  assert(alignments.size() == realign_read.size());
-  AlignmentTrace trace(fw_haplotype_->num_blocks());
-  double* prob_ptr = aln_probs + (init_read_index*fw_haplotype_->num_combs());
-  for (unsigned int i = 0; i < alignments.size(); i++){
-    if (!realign_read[i]){
-      prob_ptr += fw_haplotype_->num_combs();
-      continue;
-    }
+  process_reads_range(alignments, 0, (int)alignments.size(), init_read_index, base_quality, realign_read, aln_probs, seed_positions);
+}
 
-    int seed_base = calc_seed_base(alignments[i]);
-    seed_positions[init_read_index+i] = seed_base;
-    if (seed_base == -1){
-      // Assign all haplotypes the same zero LL
-      for (unsigned int i = 0; i < fw_haplotype_->num_combs(); ++i, ++prob_ptr)
-	*prob_ptr = 0;
-    }
-    else {
-      process_read(alignments[i], seed_base, base_quality, false, prob_ptr, trace);
-      prob_ptr += fw_haplotype_->num_combs();
-    }
+/**Begin of implementing HapAligner process_reads_range -> read_parallel implementation
+ * 
+ */
+
+ void HapAligner::process_reads_range(const std::vector<Alignment>& alignments,
+                                      int begin,
+                                      int end,
+                                      int init_read_index,
+                                      const BaseQuality* base_quality,
+                                      const std::vector<bool>& realign_read,
+                                      double* aln_probs,
+                                      int* seed_positions){
+
+assert(begin >= 0);
+assert(end >= begin);
+assert(end <= (int)alignments.size());
+assert(alignments.size() == realign_read.size());
+
+AlignmentTrace trace(fw_haplotype_->num_blocks());
+double* prob_ptr = aln_probs + (init_read_index*fw_haplotype_->num_combs());
+for(int i = begin; i < end; i++){
+  if(!realign_read[i]) {
+    prob_ptr += fw_haplotype_->num_combs();
+    continue;
   }
+
+  int seed_base = calc_seed_base(alignments[i]);
+  if(seed_base == -1){
+      // Assign all haplotypes the same zero LL
+      for (unsigned int i = 0; i < fw_haplotype_->num_combs(); ++i, ++prob_ptr){
+        *prob_ptr = 0;
+      }
+  }
+  else{
+    process_read(alignments[i], seed_base, base_quality, false, prob_ptr, trace);
+    prob_ptr += fw_haplotype_->num_combs();
+  }
+}
+
+
 }
 
 const double TRACE_LL_TOL = 0.001;

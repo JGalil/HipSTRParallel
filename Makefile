@@ -5,7 +5,7 @@
 ## Default compilation flags.
 ## Override with:
 ##   make CXXFLAGS=XXXXX
-CXXFLAGS= -O3 -g -D__STDC_LIMIT_MACROS -D_FILE_OFFSET_BITS=64 -std=c++0x -DMACOSX -pthread #-pedantic -Wunreachable-code -Weverything
+CXXFLAGS= -O3 -g -D__STDC_LIMIT_MACROS -D_FILE_OFFSET_BITS=64 -std=c++17 -DMACOSX -pthread #-pedantic -Wunreachable-code -Weverything
 
 ## To create a static distribution file, run:
 ##   make static-dist
@@ -31,7 +31,7 @@ CEPHES_ROOT=lib/cephes
 HTSLIB_ROOT=lib/htslib
 
 LIBS              = -L./ -lm -L$(HTSLIB_ROOT)/ -lz -L$(CEPHES_ROOT)/ -llzma -lbz2
-INCLUDE           = -Ilib -Ilib/htslib
+INCLUDE           = -Ilib -Ilib/htslib -I../taskflow
 CEPHES_LIB        = lib/cephes/libprob.a
 HTSLIB_LIB        = $(HTSLIB_ROOT)/libhts.a
 

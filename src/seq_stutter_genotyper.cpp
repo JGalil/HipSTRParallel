@@ -6,6 +6,7 @@
 #include <string>
 #include <sstream>
 #include <time.h>
+#include <taskflow/taskflow.hpp>
 
 #include "seq_stutter_genotyper.h"
 #include "bam_processor.h"
@@ -28,6 +29,7 @@
 
 #include "cephes/cephes.h"
 #include "htslib/htslib/kfunc.h"
+
 
 int max_index(double* vals, unsigned int num_vals){
   int best_index = 0;
@@ -521,6 +523,7 @@ void SeqStutterGenotyper::calc_hap_aln_probs(std::vector<bool>& realign_to_haplo
   HapAligner hap_aligner(haplotype_, realign_to_haplotype);
 
   // Align each pooled read to each haplotype
+  /**change the hap_aligner.process_reads() call here to be parallel */
   AlnList& pooled_alns       = pooler_.get_alignments();
   double* log_pool_aln_probs = new double[pooled_alns.size()*num_alleles_];
   int* pool_seed_positions   = new int[pooled_alns.size()];

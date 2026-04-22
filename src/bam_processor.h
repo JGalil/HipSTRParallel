@@ -169,6 +169,35 @@ class BamProcessor {
  int32_t MAX_TOTAL_READS;       // Skip loci where the number of STR reads passing all filters exceeds this limit
  char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
  bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+
+ /**
+  * Pipeline code
+  */
+
+  //output of read/filter stage
+  struct RegionWorkItem {
+    RegionGroup region_group;
+    std::string chrom_seq;
+    std::vector<std::string> rg_names;
+    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
+    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
+    std::vector<BamProcessor::BamAlnList> unpaired_strs_by_rg;
+
+    RegionWorkItem(const RegionGroup& rg) : region_group(rg) {}
+
+  };
+
+  //output of genotype stage
+  struct RegionResult {
+    std::string chrom;
+    int32_t pos;
+    std::string vcf_text;
+    std::string viz_text;
+    std::string stutter_text;
+    bool has_vcf = false;
+    bool has_viz = false;
+    bool has_stutter = false;
+  };
 };
 
 #endif
