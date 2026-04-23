@@ -156,6 +156,10 @@ StutterModel* GenotyperBamProcessor::learn_stutter_model(std::vector<BamAlnList>
     return NULL;
   }
 }
+/**
+ * Begin of pipeline code
+ * analyze_reads_and_phasing changed
+ */
 
 void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
 						      std::vector< std::vector<double> >& log_p1s,
@@ -238,7 +242,41 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 
       if (pass){
 	num_genotype_success_++;
-	seq_genotyper->write_vcf_record(samples_to_genotype_, chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_out_, &vcf_writer_, selective_logger());
+
+  //pipeline stuff
+
+  std::stringstream vcf_ss;
+  std::stringstream viz_ss;
+  std::stringstream stutter_ss;
+
+  seq_genotyper->build_vcf_record_text(samples_to_genotype_,
+    item.chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_ss, vcf_ss, 
+    selective_logger());
+  
+  result.chrom = item.region_group.chrom();
+  result.pos = item.region_group.start();
+  result.vcf_text = vcf_ss.str();
+  result.has_vcf = !result.viz_text.empty();
+
+  if(output_viz_) {
+    result.viz_text = viz_ss.str();
+    result.has_viz = !result.viz_text.empty();
+  }
+  
+  //removed for pipelining
+	// seq_genotyper->write_vcf_record(samples_to_genotype_, chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_out_, &vcf_writer_, selective_logger());
+
+  //pipelined version
+  std::vector<BuiltVCFRecord> records;
+  seq_genotyper->build_vcf_records(samples_to_genotype_,
+    chrom_seq, records, selective_logger());
+  
+  for(size_t i = 0; i < records.size(); i++){
+    if(records[i].valid) {
+      vcf_writer_.add_vcf_record(records[i].chrom, records[i].pos,
+            records[i].text);
+    }
+  }
       }
       else
 	num_genotype_fail_++;
@@ -285,3 +323,17 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
   for (int i = 0; i < stutter_models.size(); i++)
     delete stutter_models[i];
 }
+
+void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResult& result){
+  std::vector<SeqStutterGenotyper::BuiltVCFRecord> vcf_records;
+}
+
+void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
+  for (size_t i = 0; i < result.vcf_records.size(); ++i) {
+    const auto& r = result.vcf_records[i];
+    if (r.valid) {
+      vcf_writer_.add_vcf_record(r.chrom, r.pos, r.text);
+    }
+  }
+}
+

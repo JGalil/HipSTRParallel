@@ -194,6 +194,31 @@ class SeqStutterGenotyper : public Genotyper {
   */
   bool recompute_stutter_models(std::ostream& logger, int max_total_haplotypes, int max_flank_haplotypes, double min_flank_freq,
 				int max_em_iter, double abs_ll_converge, double frac_ll_converge);
+
+  //pipeline struct
+
+  struct BuiltVCFRecord {
+    std::string chrom;
+    int32_t pos;
+    std::string text;
+    bool valid;
+
+    BuiltVCFRecord() : pos(-1), valid(false) {}
+  };
+
+  void build_vcf_record(
+    const std::vector<std::string>& sample_names,
+    int hap_block_index,
+    const Region& region,
+    const std::string& chrom_seq,
+    BuiltVCFRecord& record,
+    std::ostream& logger) const;
+
+  void build_vcf_records(
+    const std::vector<std::string>& sample_names,
+    const std::string& chrom_seq,
+    std::vector<BuiltVCFRecord>& records,
+    std::ostream& logger) const;
 };
 
 #endif

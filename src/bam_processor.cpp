@@ -599,7 +599,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
 
     tf::Pipe{tf::PipeType::SERIAL [&](tf::Pipeflow& pf) {
       auto* result = reinterpret_cast<RegionResult*>(pf.token());
-      write_regino_result(*result);
+      write_region_result(*result);
       delete result;
     }}
   );
@@ -618,7 +618,49 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
     BamWriter* pass_writer,
     BamWriter* filt_writer,
     RegionWorkItem& item) {
+      item.chrom_seq = chrom_seq;
+      if (!reader.SetRegion(cur_chrom, 
+        (region_iter.start() < MAX_MATE_DIST ? 0: region_iter.start() - MAX_MATE_DIST),
+        region_iter.stop() + MAX_MATE_DIST)) {
+      printErrorAndDie("One or more BAM files failed to set the region properly");
+      }
       
+      read_and_filter_reads(reader, chrom_seq, 
+        item.region_group, rg_to_sample, item.rg_names,
+      item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg, 
+      pass_writer, filt_writer);
+
+      // The user specified a list of samples to which we need to restrict the analyses
+      // Discard reads for any samples not in this set
+      if (!sample_set_.empty()){
+        selective_logger() << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
+        unsigned int ins_index = 0;
+        for (unsigned int i = 0; i < rg_names.size(); i++){
+          if (sample_set_.find(rg_names[i]) != sample_set_.end()){
+            if (i != ins_index){
+              rg_names[ins_index]            = rg_names[i];
+              paired_strs_by_rg[ins_index]   = paired_strs_by_rg[i];
+              mate_pairs_by_rg[ins_index]    = mate_pairs_by_rg[i];
+              unpaired_strs_by_rg[ins_index] = unpaired_strs_by_rg[i];
+            }
+            ins_index++;
+          }
+        }
+        if (ins_index != rg_names.size()){
+          rg_names.resize(ins_index);
+          paired_strs_by_rg.resize(ins_index);
+          mate_pairs_by_rg.resize(ins_index);
+          unpaired_strs_by_rg.resize(ins_index);
+        }
+      }
+      if (REMOVE_PCR_DUPS == 1) {
+        remove_pcr_duplicates(base_quality_, 
+        use_bam_rgs_, rg_to_library, 
+        item.paired_strs_by_rg, item.mate_pairs_by_rg, 
+        item.unpaired_strs_by_rg, selective_logger());
+      }
+
+      return true;
     }
  /**
   * pipeline code ends

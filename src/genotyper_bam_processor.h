@@ -245,6 +245,20 @@ public:
 
   // If this flag is set, HTML alignments are written for both the haplotype alignments and Needleman-Wunsch left alignments
   int VIZ_LEFT_ALNS;
+
+  /**
+   * Begin pipeline code
+   */
+
+  void process_region_item(RegionWorkItem& item,
+    RegionResult& result);
+  
+  void write_region_result(const RegionResult& result);
+  
+
+   /**
+    * End pipeline code
+    */
 };
 
 #endif
