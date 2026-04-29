@@ -693,7 +693,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
   auto wall_start = std::chrono::high_resolution_clock::now();
   executor.run(taskflow).wait();
   auto wall_end = std::chrono::high_resolution_clock::now();
-  std::ofstream ofs("hipstr_parallel_profile.json");
+  std::ofstream ofs("hipstr_parallel_profile.tfp", std::ios::binary);
   observer->dump(ofs);
 
   std::cout << "HipSTRParallel total wall time: "
