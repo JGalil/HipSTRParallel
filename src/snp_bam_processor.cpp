@@ -44,9 +44,11 @@ void SNPBamProcessor::process_reads(std::vector<BamAlnList>& paired_strs_by_rg,
 }
 
 bool SNPBamProcessor::prepare_region_work_item(RegionWorkItem& item){
-  return prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
-			      item.rg_names, item.region_group, item.chrom_seq,
-			      item.alignments, item.log_p1s, item.log_p2s);
+  bool prepared = prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
+				      item.rg_names, item.region_group, item.chrom_seq,
+				      item.alignments, item.log_p1s, item.log_p2s);
+  item.snp_phase_info_time = locus_snp_phase_info_time_;
+  return prepared;
 }
 
 bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_by_rg,

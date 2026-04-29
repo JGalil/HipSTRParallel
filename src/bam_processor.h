@@ -191,6 +191,9 @@ class BamProcessor {
 	    std::vector< std::vector<double> > log_p1s;
 	    std::vector< std::vector<double> > log_p2s;
 	    bool too_many_reads;
+	    double bam_seek_time = 0;
+	    double read_filter_time = 0;
+	    double snp_phase_info_time = 0;
 
 	    RegionWorkItem(const RegionGroup& rg) : region_group(rg), too_many_reads(false) {}
 
@@ -210,10 +213,29 @@ class BamProcessor {
 	    std::string chrom;
 	    int32_t pos;
 	    std::vector<VCFRecord> vcf_records;
+	    std::string log_text;
 	    std::string viz_text;
 	    std::string stutter_text;
 	    bool has_viz = false;
 	    bool has_stutter = false;
+	    int too_few_reads = 0;
+	    int too_many_reads = 0;
+	    int num_missing_models = 0;
+	    int num_em_converge = 0;
+	    int num_em_fail = 0;
+	    int num_genotype_success = 0;
+	    int num_genotype_fail = 0;
+	    double stutter_time = 0;
+	    double bam_seek_time = 0;
+	    double read_filter_time = 0;
+	    double snp_phase_info_time = 0;
+	    double left_aln_time = 0;
+	    double genotype_time = 0;
+	    double hap_build_time = 0;
+	    double hap_aln_time = 0;
+	    double assembly_time = 0;
+	    double posterior_time = 0;
+	    double aln_trace_time = 0;
 	  };
 
 	  bool make_region_work_item(

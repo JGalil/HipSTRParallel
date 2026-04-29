@@ -552,6 +552,8 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
 			pass_writer, filt_writer);
   item.too_many_reads = TOO_MANY_READS;
+  item.bam_seek_time = locus_bam_seek_time_;
+  item.read_filter_time = locus_read_filter_time_;
 
   // The user specified a list of samples to which we need to restrict the analyses.
   if (!sample_set_.empty()){
@@ -674,10 +676,10 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
       std::unique_ptr<RegionResult> result(new RegionResult());
       process_region_item(*work_items[pf.line()], *result);
       work_items[pf.line()].reset();
-      results[pf.line()] = std::move(result);
       auto t1 = std::chrono::high_resolution_clock::now();
       double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-      full_logger() << "[line " << pf.line() << "] process_region_item: " << ms << " ms\n";
+      result->log_text += "[line " + std::to_string(pf.line()) + "] process_region_item: " + std::to_string(ms) + " ms\n";
+      results[pf.line()] = std::move(result);
     }},
 
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {

@@ -4,7 +4,6 @@
 #include <fstream>
 #include <iostream>
 #include <map>
-#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +49,7 @@ private:
 
   // VCF containing STR genotypes for a reference panel
   VCF::VCFReader* ref_vcf_;
+  std::string ref_vcf_file_;
 
   bool output_viz_;
   bgzfostream viz_out_;
@@ -67,19 +67,20 @@ private:
 
   // Simple object to track total times consumed by various processes
   ProcessTimer process_timer_;
-  std::mutex pipeline_mutex_;
 
   // If it is not null, this stutter model will be used for each locus
   StutterModel* def_stutter_model_;
 
-  void left_align_reads(const RegionGroup& region_group, const std::string& chrom_seq, std::vector<BamAlnList>& alignments,
+  double left_align_reads(const RegionGroup& region_group, const std::string& chrom_seq, std::vector<BamAlnList>& alignments,
 			const std::vector< std::vector<double> >& log_p1, const std::vector< std::vector<double> >& log_p2,
 			std::vector< std::vector<double> >& filt_log_p1,  std::vector< std::vector<double> >& filt_log_p2,
-			std::vector< Alignment>& left_alns);
+			std::vector< Alignment>& left_alns,
+			std::ostream& logger);
 
   StutterModel* learn_stutter_model(std::vector<BamAlnList>& alignments,
 				    const std::vector< std::vector<double> >& log_p1s, const std::vector< std::vector<double> >& log_p2s,
-				    bool haploid, const std::vector<std::string>& rg_names, const Region& region);
+				    bool haploid, const std::vector<std::string>& rg_names, const Region& region,
+				    std::ostream& logger, RegionResult* result);
 
   // Private unimplemented copy constructor and assignment operator to prevent operations
   GenotyperBamProcessor(const GenotyperBamProcessor& other);
@@ -158,6 +159,7 @@ public:
   }
 
   void set_ref_vcf(const std::string& ref_vcf_file){
+    ref_vcf_file_ = ref_vcf_file;
     if (ref_vcf_ != NULL)
       delete ref_vcf_;
     ref_vcf_ = new VCF::VCFReader(ref_vcf_file);
