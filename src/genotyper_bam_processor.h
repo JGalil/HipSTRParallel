@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -66,6 +67,7 @@ private:
 
   // Simple object to track total times consumed by various processes
   ProcessTimer process_timer_;
+  std::mutex pipeline_mutex_;
 
   // If it is not null, this stutter model will be used for each locus
   StutterModel* def_stutter_model_;
@@ -189,10 +191,18 @@ public:
     std::sort(samples_to_genotype_.begin(), samples_to_genotype_.end());
   }
 
-  void analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
-				 std::vector< std::vector<double> >& log_p1s,
-				 std::vector< std::vector<double> >& log_p2s,
-				 const std::vector<std::string>& rg_names, const RegionGroup& region, const std::string& chrom_seq);
+	  void analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
+					 std::vector< std::vector<double> >& log_p1s,
+					 std::vector< std::vector<double> >& log_p2s,
+					 const std::vector<std::string>& rg_names, const RegionGroup& region, const std::string& chrom_seq);
+	  void analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
+					 std::vector< std::vector<double> >& log_p1s,
+					 std::vector< std::vector<double> >& log_p2s,
+					 const std::vector<std::string>& rg_names,
+					 const RegionGroup& region,
+					 const std::string& chrom_seq,
+					 bool too_many_reads,
+					 RegionResult* result);
   void finish(){
     SNPBamProcessor::finish();
     if (vcf_writer_.is_open())

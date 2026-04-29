@@ -162,9 +162,20 @@ StutterModel* GenotyperBamProcessor::learn_stutter_model(std::vector<BamAlnList>
  */
 
 void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
-						      std::vector< std::vector<double> >& log_p1s,
-						      std::vector< std::vector<double> >& log_p2s,
-						      const std::vector<std::string>& rg_names, const RegionGroup& region_group, const std::string& chrom_seq){
+							      std::vector< std::vector<double> >& log_p1s,
+							      std::vector< std::vector<double> >& log_p2s,
+							      const std::vector<std::string>& rg_names, const RegionGroup& region_group, const std::string& chrom_seq){
+  analyze_reads_and_phasing(alignments, log_p1s, log_p2s, rg_names, region_group, chrom_seq, TOO_MANY_READS, NULL);
+}
+
+void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
+							      std::vector< std::vector<double> >& log_p1s,
+							      std::vector< std::vector<double> >& log_p2s,
+							      const std::vector<std::string>& rg_names,
+							      const RegionGroup& region_group,
+							      const std::string& chrom_seq,
+							      bool too_many_reads,
+							      RegionResult* result){
   int32_t total_reads = 0;
   for (unsigned int i = 0; i < alignments.size(); i++)
     total_reads += alignments[i].size();
@@ -175,7 +186,7 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
   }
   // Can't simply check the total number of reads because the bam processor may have stopped reading at the threshold and then removed PCR duplicates
   // Instead, we check this flag which it sets when too many reads are encountered during filtering
-  if (TOO_MANY_READS){
+  if (too_many_reads){
     full_logger() << "Skipping locus with too many reads: TOTAL=" << total_reads << ", MAX=" << MAX_TOTAL_READS << std::endl;
     too_many_reads_++;
     return;
@@ -240,44 +251,35 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
       if (recalc_stutter_model_)
 	pass = seq_genotyper->recompute_stutter_models(selective_logger(), MAX_TOTAL_HAPLOTYPES, MAX_FLANK_HAPLOTYPES, MIN_FLANK_FREQ, MAX_EM_ITER, ABS_LL_CONVERGE, FRAC_LL_CONVERGE);
 
-      if (pass){
-	num_genotype_success_++;
+	      if (pass){
+		num_genotype_success_++;
+		if (result != NULL){
+		  result->chrom = region_group.chrom();
+		  result->pos = region_group.start();
 
-  //pipeline stuff
-
-  std::stringstream vcf_ss;
-  std::stringstream viz_ss;
-  std::stringstream stutter_ss;
-
-  seq_genotyper->build_vcf_record_text(samples_to_genotype_,
-    item.chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_ss, vcf_ss, 
-    selective_logger());
-  
-  result.chrom = item.region_group.chrom();
-  result.pos = item.region_group.start();
-  result.vcf_text = vcf_ss.str();
-  result.has_vcf = !result.viz_text.empty();
-
-  if(output_viz_) {
-    result.viz_text = viz_ss.str();
-    result.has_viz = !result.viz_text.empty();
-  }
-  
-  //removed for pipelining
-	// seq_genotyper->write_vcf_record(samples_to_genotype_, chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_out_, &vcf_writer_, selective_logger());
-
-  //pipelined version
-  std::vector<BuiltVCFRecord> records;
-  seq_genotyper->build_vcf_records(samples_to_genotype_,
-    chrom_seq, records, selective_logger());
-  
-  for(size_t i = 0; i < records.size(); i++){
-    if(records[i].valid) {
-      vcf_writer_.add_vcf_record(records[i].chrom, records[i].pos,
-            records[i].text);
-    }
-  }
-      }
+		  std::stringstream viz_ss;
+		  std::vector<SeqStutterGenotyper::BuiltVCFRecord> records;
+		  seq_genotyper->build_vcf_records(samples_to_genotype_, chrom_seq, records, selective_logger(),
+						   output_viz_, (VIZ_LEFT_ALNS == 1), &viz_ss);
+		  for (size_t i = 0; i < records.size(); i++){
+		    if (records[i].valid){
+		      VCFRecord record;
+		      record.chrom = records[i].chrom;
+		      record.pos = records[i].pos;
+		      record.text = records[i].text;
+		      record.valid = records[i].valid;
+		      result->vcf_records.push_back(record);
+		    }
+		  }
+		  if (output_viz_){
+		    result->viz_text = viz_ss.str();
+		    result->has_viz = !result->viz_text.empty();
+		  }
+		}
+		else {
+		  seq_genotyper->write_vcf_record(samples_to_genotype_, chrom_seq, output_viz_, (VIZ_LEFT_ALNS == 1), viz_out_, &vcf_writer_, selective_logger());
+		}
+	      }
       else
 	num_genotype_fail_++;
     }
@@ -325,7 +327,10 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 }
 
 void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResult& result){
-  std::vector<SeqStutterGenotyper::BuiltVCFRecord> vcf_records;
+  std::lock_guard<std::mutex> lock(pipeline_mutex_);
+  analyze_reads_and_phasing(item.alignments, item.log_p1s, item.log_p2s,
+			    item.rg_names, item.region_group, item.chrom_seq,
+			    item.too_many_reads, &result);
 }
 
 void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
@@ -335,5 +340,6 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
       vcf_writer_.add_vcf_record(r.chrom, r.pos, r.text);
     }
   }
+  if (result.has_viz)
+    viz_out_ << result.viz_text;
 }
-

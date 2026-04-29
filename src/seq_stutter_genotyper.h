@@ -212,13 +212,19 @@ class SeqStutterGenotyper : public Genotyper {
     const Region& region,
     const std::string& chrom_seq,
     BuiltVCFRecord& record,
-    std::ostream& logger) const;
+    std::ostream& logger,
+    bool output_viz = false,
+    bool viz_left_alns = false,
+    std::ostream* html_output = NULL);
 
   void build_vcf_records(
     const std::vector<std::string>& sample_names,
     const std::string& chrom_seq,
     std::vector<BuiltVCFRecord>& records,
-    std::ostream& logger) const;
+    std::ostream& logger,
+    bool output_viz = false,
+    bool viz_left_alns = false,
+    std::ostream* html_output = NULL);
 };
 
 #endif

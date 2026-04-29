@@ -45,9 +45,22 @@ private:
 
   void verify_vcf_chromosomes(const std::vector<std::string>& chroms);
 
-  // Private unimplemented copy constructor and assignment operator to prevent operations
-  SNPBamProcessor(const SNPBamProcessor& other);
-  SNPBamProcessor& operator=(const SNPBamProcessor& other);
+	// Private unimplemented copy constructor and assignment operator to prevent operations
+	SNPBamProcessor(const SNPBamProcessor& other);
+	SNPBamProcessor& operator=(const SNPBamProcessor& other);
+
+protected:
+	bool prepare_read_phasing(std::vector<BamAlnList>& paired_strs_by_rg,
+				  std::vector<BamAlnList>& mate_pairs_by_rg,
+				  std::vector<BamAlnList>& unpaired_strs_by_rg,
+				  const std::vector<std::string>& rg_names,
+				  const RegionGroup& region_group,
+				  const std::string& chrom_seq,
+				  std::vector<BamAlnList>& alignments,
+				  std::vector< std::vector<double> >& log_p1s,
+				  std::vector< std::vector<double> >& log_p2s);
+
+	bool prepare_region_work_item(RegionWorkItem& item);
 
 public:
  SNPBamProcessor(bool use_bam_rgs, bool remove_pcr_dups) : BamProcessor(use_bam_rgs, remove_pcr_dups){

@@ -93,8 +93,9 @@ void print_usage(int def_mdist, int def_min_reads, int def_max_reads, int def_ma
 	    << "\t" << "--help                                "  << "\t" << "Print this help message and exit"                                                     << "\n"
 	    << "\t" << "--version                             "  << "\t" << "Print HipSTR version and exit"                                                        << "\n"
 	    << "\t" << "--quiet                               "  << "\t" << "Only output terse logging messages (Default = output all messages)"                   << "\n"
-	    << "\t" << "--silent                              "  << "\t" << "Don't output any logging messages  (Default = output all messages)"                   << "\n"
-	    << "\t" << "--def-stutter-model                   "  << "\t" << "For each locus, use a stutter model with PGEOM=0.9 and UP=DOWN=0.05 for in-frame"     << "\n"
+		    << "\t" << "--silent                              "  << "\t" << "Don't output any logging messages  (Default = output all messages)"                   << "\n"
+		    << "\t" << "--threads            <num_threads>    "  << "\t" << "Number of Taskflow pipeline lines to use (Default = 1)"                               << "\n"
+		    << "\t" << "--def-stutter-model                   "  << "\t" << "For each locus, use a stutter model with PGEOM=0.9 and UP=DOWN=0.05 for in-frame"     << "\n"
 	    << "\t" << "                                      "  << "\t" << " artifacts and PGEOM=0.9 and UP=DOWN=0.01 for out-of-frame artifacts"                 << "\n"
 	    << "\t" << "--chrom              <chrom>          "  << "\t" << "Only consider STRs on this chromosome"                                                << "\n"
 	    << "\t" << "--haploid-chrs       <list_of_chroms> "  << "\t" << "Comma separated list of chromosomes to treat as haploid (Default = all diploid)"      << "\n"
@@ -183,9 +184,10 @@ void parse_command_line_args(int argc, char** argv,
     {"viz-left-alns",      no_argument, &(bam_processor.VIZ_LEFT_ALNS),        1},
     {"def-stutter-model",  no_argument, &def_stutter_model, 1},
     {"version",            no_argument, &print_version, 1},
-    {"quiet",              no_argument, &quiet_log, 1},
-    {"silent",             no_argument, &silent_log, 1},
-    {"skip-genotyping",    no_argument, &skip_genotyping, 1},
+	    {"quiet",              no_argument, &quiet_log, 1},
+	    {"silent",             no_argument, &silent_log, 1},
+	    {"threads",       required_argument, 0, 1000},
+	    {"skip-genotyping",    no_argument, &skip_genotyping, 1},
     {0, 0, 0, 0}
   };
 
@@ -203,9 +205,14 @@ void parse_command_line_args(int argc, char** argv,
     }
 
     switch(c){
-    case 0:
-      break;
-    case 'b':
+	    case 0:
+	      break;
+	    case 1000:
+	      bam_processor.NUM_THREADS = atoi(optarg);
+	      if (bam_processor.NUM_THREADS < 1)
+		printErrorAndDie("--threads must be at least 1");
+	      break;
+	    case 'b':
       bamlist_string = std::string(optarg);
       break;
     case 'B':

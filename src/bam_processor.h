@@ -3,11 +3,13 @@
 
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
-#include <taskflow>
+#include <taskflow/taskflow.hpp>
+#include <taskflow/algorithm/pipeline.hpp>
 
 #include "bam_io.h"
 #include "base_quality.h"
@@ -51,11 +53,11 @@ class BamProcessor {
 
  bool spans_a_region(const std::vector<Region>& regions, BamAlignment& alignment) const;
 
- void verify_chromosomes(const std::vector<std::string>& chroms, const BamHeader* bam_header, FastaReader& fasta_reader);
+  void verify_chromosomes(const std::vector<std::string>& chroms, const BamHeader* bam_header, FastaReader& fasta_reader);
 
- virtual void verify_vcf_chromosomes(const std::vector<std::string>& chroms) = 0;
+  virtual void verify_vcf_chromosomes(const std::vector<std::string>& chroms) = 0;
 
- virtual void init_output_vcf(const std::string& fasta_path, const std::vector<std::string>& chroms, const std::string& full_command) = 0;
+  virtual void init_output_vcf(const std::string& fasta_path, const std::vector<std::string>& chroms, const std::string& full_command) = 0;
 
  protected:
  BaseQuality base_quality_;
@@ -98,11 +100,12 @@ class BamProcessor {
    quiet_                   = false;
    silent_                  = false;
    log_to_file_             = false;
-   MAX_TOTAL_READS          = 1000000;
-   BASE_QUAL_TRIM           = '5';
-   TOO_MANY_READS           = false;
-   bams_from_10x_           = false;
- }
+    MAX_TOTAL_READS          = 1000000;
+    BASE_QUAL_TRIM           = '5';
+    TOO_MANY_READS           = false;
+    bams_from_10x_           = false;
+    NUM_THREADS              = 1;
+	 }
 
  ~BamProcessor(){
    if (log_to_file_)
@@ -168,11 +171,12 @@ class BamProcessor {
 
  double  MIN_SUM_QUAL_LOG_PROB;
  int32_t MAX_TOTAL_READS;       // Skip loci where the number of STR reads passing all filters exceeds this limit
- char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
- bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+	 char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
+	 bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+	 int     NUM_THREADS;           // Number of Taskflow pipeline lines/worker threads
 
- /**
-  * Pipeline code
+	 /**
+	  * Pipeline code
   */
 
   //output of read/filter stage
@@ -180,42 +184,56 @@ class BamProcessor {
     RegionGroup region_group;
     std::string chrom_seq;
     std::vector<std::string> rg_names;
-    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
-    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
-    std::vector<BamProcessor::BamAlnList> unpaired_strs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> unpaired_strs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> alignments;
+	    std::vector< std::vector<double> > log_p1s;
+	    std::vector< std::vector<double> > log_p2s;
+	    bool too_many_reads;
 
-    RegionWorkItem(const RegionGroup& rg) : region_group(rg) {}
+	    RegionWorkItem(const RegionGroup& rg) : region_group(rg), too_many_reads(false) {}
 
-  };
+	  };
 
-  //output of genotype stage
-  struct RegionResult {
-    std::string chrom;
-    int32_t pos;
-    std::string vcf_text;
-    std::string viz_text;
-    std::string stutter_text;
-    bool has_vcf = false;
-    bool has_viz = false;
-    bool has_stutter = false;
-  };
+	  struct VCFRecord {
+	    std::string chrom;
+	    int32_t pos;
+	    std::string text;
+	    bool valid;
 
-  virtual bool make_region_work_item(
-    BamCramMultiReader& reader,
-    const std::map<std::string, std::string>& rg_to_sample,
-    const std::map<std::string, std::string>& rg_to_library,
+	    VCFRecord() : pos(-1), valid(false) {}
+	  };
+
+	  //output of genotype stage
+	  struct RegionResult {
+	    std::string chrom;
+	    int32_t pos;
+	    std::vector<VCFRecord> vcf_records;
+	    std::string viz_text;
+	    std::string stutter_text;
+	    bool has_viz = false;
+	    bool has_stutter = false;
+	  };
+
+	  bool make_region_work_item(
+	    BamCramMultiReader& reader,
+	    const std::map<std::string, std::string>& rg_to_sample,
+	    const std::map<std::string, std::string>& rg_to_library,
     const Region& region,
     const std::string& chrom_seq,
-    BamWriter* pass_writer,
-    BamWriter* filt_writer,
-    RegionWorkItem& item) = 0;
+	    BamWriter* pass_writer,
+	    BamWriter* filt_writer,
+	    RegionWorkItem& item);
 
-  virtual void process_region_item(
-    RegionWorkItem& item,
-    RegionResult& result) = 0;
+	  virtual bool prepare_region_work_item(RegionWorkItem& item) { return true; }
 
-  virtual void write_regino_result(
-    const RegionResult& result) = 0;
+	  virtual void process_region_item(
+	    RegionWorkItem& item,
+	    RegionResult& result) = 0;
+
+	  virtual void write_region_result(
+	    const RegionResult& result) = 0;
 };
 
 #endif

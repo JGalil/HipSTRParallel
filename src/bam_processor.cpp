@@ -529,11 +529,65 @@ void BamProcessor::verify_chromosomes(const std::vector<std::string>& chroms, co
   verify_vcf_chromosomes(chroms);
 }
 
+bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
+					 const std::map<std::string, std::string>& rg_to_sample,
+					 const std::map<std::string, std::string>& rg_to_library,
+					 const Region& region,
+					 const std::string& chrom_seq,
+					 BamWriter* pass_writer,
+					 BamWriter* filt_writer,
+					 RegionWorkItem& item) {
+  item.chrom_seq = chrom_seq;
+
+  locus_bam_seek_time_ = clock();
+  if (!reader.SetRegion(region.chrom(), (region.start() < MAX_MATE_DIST ? 0 : region.start()-MAX_MATE_DIST),
+			region.stop() + MAX_MATE_DIST))
+    printErrorAndDie("One or more BAM files failed to set the region properly");
+
+  locus_bam_seek_time_  = (clock() - locus_bam_seek_time_)/CLOCKS_PER_SEC;
+  total_bam_seek_time_ += locus_bam_seek_time_;
+
+  read_and_filter_reads(reader, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
+			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
+			pass_writer, filt_writer);
+  item.too_many_reads = TOO_MANY_READS;
+
+  // The user specified a list of samples to which we need to restrict the analyses.
+  if (!sample_set_.empty()){
+    selective_logger() << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
+    unsigned int ins_index = 0;
+    for (unsigned int i = 0; i < item.rg_names.size(); i++){
+      if (sample_set_.find(item.rg_names[i]) != sample_set_.end()){
+	if (i != ins_index){
+	  item.rg_names[ins_index]            = item.rg_names[i];
+	  item.paired_strs_by_rg[ins_index]   = item.paired_strs_by_rg[i];
+	  item.mate_pairs_by_rg[ins_index]    = item.mate_pairs_by_rg[i];
+	  item.unpaired_strs_by_rg[ins_index] = item.unpaired_strs_by_rg[i];
+	}
+	ins_index++;
+      }
+    }
+    if (ins_index != item.rg_names.size()){
+      item.rg_names.resize(ins_index);
+      item.paired_strs_by_rg.resize(ins_index);
+      item.mate_pairs_by_rg.resize(ins_index);
+      item.unpaired_strs_by_rg.resize(ins_index);
+    }
+  }
+
+  if (REMOVE_PCR_DUPS == 1)
+    remove_pcr_duplicates(base_quality_, use_bam_rgs_, rg_to_library,
+			  item.paired_strs_by_rg, item.mate_pairs_by_rg,
+			  item.unpaired_strs_by_rg, selective_logger());
+
+  return true;
+}
+
 
 
 void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string& region_file, const std::string& fasta_file,
-				   const std::map<std::string, std::string>& rg_to_sample, const std::map<std::string, std::string>& rg_to_library, const std::string& full_command,
-				   BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, const std::string& chrom){
+					   const std::map<std::string, std::string>& rg_to_sample, const std::map<std::string, std::string>& rg_to_library, const std::string& full_command,
+					   BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, const std::string& chrom){
   std::vector<Region> regions;
   readRegions(region_file, max_regions, chrom, regions, full_logger());
   orderRegions(regions);
@@ -557,180 +611,78 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
   // Add the chromosome information to the VCF
   init_output_vcf(fasta_file, chroms, full_command);
 
-  /**
- * pipeline code begins
- */
-
-  tf::Executor executor(num_threads);
+  size_t pipeline_lines = std::max<size_t>(1, NUM_THREADS);
+  tf::Executor executor(pipeline_lines);
   tf::Taskflow taskflow;
+  std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
+  std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
 
-  std::vector<Region> regions;
-  readRegions(region_file, max_regions, chrom, regions, full_logger());
-  orderRegions(regions);
+  size_t next_region = 0;
+  std::string cur_chrom = "", chrom_seq = "";
 
-  std::atomic<size_t> next_region{0};
-  std::mutex reader_mutex;
-  std::mutex writer_mutex;
-  std::map<std::string, std::string> chrom_cache;
-  
-  tf::Pipeline pl(
-    num_threads,
+  /**
+   * PIPELINE CODE
+   */
 
-    tf::Pipe{tf::PipeType::SERIAL [&](tf::Pipeflow& pf){
-      size_t idx = next_region++;
-      if(idx >= regions.size()) {
-        pf.stop();
-        return;
+  tf::Pipeline pipeline(
+    pipeline_lines,
+
+    tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
+      work_items[pf.line()].reset();
+
+      while (next_region < regions.size()){
+        const Region& region = regions[next_region++];
+        full_logger() << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << std::endl;
+
+        if (region.stop() - region.start() > MAX_STR_LENGTH){
+          num_too_long_++;
+          full_logger() << "Skipping region as the reference allele length exceeds the threshold (" << region.stop()-region.start() << " vs " << MAX_STR_LENGTH << ")" << "\n"
+            << "You can increase this threshold using the --max-str-len option" << std::endl;
+          continue;
+        }
+
+        if (region.chrom().compare(cur_chrom) != 0){
+          cur_chrom = region.chrom();
+          fasta_reader.get_sequence(cur_chrom, chrom_seq);
+          assert(chrom_seq.size() != 0);
+        }
+
+        if (region.start() < 50 || region.stop()+50 >= chrom_seq.size()){
+          full_logger() << "Skipping region within 50bp of the end of the contig" << std::endl;
+          continue;
+        }
+
+        std::unique_ptr<RegionWorkItem> item(new RegionWorkItem(RegionGroup(region)));
+        if (make_region_work_item(reader, rg_to_sample, rg_to_library, region, chrom_seq,
+                pass_writer, filt_writer, *item) &&
+            prepare_region_work_item(*item)){
+          work_items[pf.line()] = std::move(item);
+          return;
+        }
       }
 
-      auto* item = new RegionWorkItem(RegionGroup(regions[idx]));
-
-      //load chrom seq if needed, lock reader, SetRegion + read_and_filter_reads, populate item
-      pf.token() = reinterpret_cast<intptr_t>(item);
+      pf.stop();
     }},
 
-    tf::Pipe{tf::PipeType::PARALLEL [&](tf::Pipeflow& pf) {
-      auto* item = reinterpret_cast<RegionWorkItem*>(pf.token());
-      auto* result = new RegionResult();
-      process_region_item(*item, *result);
-      delete item;
-      pf.token() = reinterpret_cast<intptr_t>(result);
+    tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
+      results[pf.line()].reset();
+      if (!work_items[pf.line()])
+        return;
+
+      std::unique_ptr<RegionResult> result(new RegionResult());
+      process_region_item(*work_items[pf.line()], *result);
+      work_items[pf.line()].reset();
+      results[pf.line()] = std::move(result);
     }},
 
-    tf::Pipe{tf::PipeType::SERIAL [&](tf::Pipeflow& pf) {
-      auto* result = reinterpret_cast<RegionResult*>(pf.token());
-      write_region_result(*result);
-      delete result;
+    tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
+      if (results[pf.line()]){
+	write_region_result(*results[pf.line()]);
+	results[pf.line()].reset();
+      }
     }}
   );
 
-  taskflow.composed_of(pl);
+  taskflow.composed_of(pipeline);
   executor.run(taskflow).wait();
-
-  //make region work item
-
-  nool BamProcessor::make_region_work_item(
-    BamCramMultiReader& reader,
-    const std::map<std::string, std::string>& rg_to_sample,
-    const std::map<std::string, std::string>& rg_to_library,
-    const Region& region,
-    const std::string& chrom_seq,
-    BamWriter* pass_writer,
-    BamWriter* filt_writer,
-    RegionWorkItem& item) {
-      item.chrom_seq = chrom_seq;
-      if (!reader.SetRegion(cur_chrom, 
-        (region_iter.start() < MAX_MATE_DIST ? 0: region_iter.start() - MAX_MATE_DIST),
-        region_iter.stop() + MAX_MATE_DIST)) {
-      printErrorAndDie("One or more BAM files failed to set the region properly");
-      }
-      
-      read_and_filter_reads(reader, chrom_seq, 
-        item.region_group, rg_to_sample, item.rg_names,
-      item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg, 
-      pass_writer, filt_writer);
-
-      // The user specified a list of samples to which we need to restrict the analyses
-      // Discard reads for any samples not in this set
-      if (!sample_set_.empty()){
-        selective_logger() << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
-        unsigned int ins_index = 0;
-        for (unsigned int i = 0; i < rg_names.size(); i++){
-          if (sample_set_.find(rg_names[i]) != sample_set_.end()){
-            if (i != ins_index){
-              rg_names[ins_index]            = rg_names[i];
-              paired_strs_by_rg[ins_index]   = paired_strs_by_rg[i];
-              mate_pairs_by_rg[ins_index]    = mate_pairs_by_rg[i];
-              unpaired_strs_by_rg[ins_index] = unpaired_strs_by_rg[i];
-            }
-            ins_index++;
-          }
-        }
-        if (ins_index != rg_names.size()){
-          rg_names.resize(ins_index);
-          paired_strs_by_rg.resize(ins_index);
-          mate_pairs_by_rg.resize(ins_index);
-          unpaired_strs_by_rg.resize(ins_index);
-        }
-      }
-      if (REMOVE_PCR_DUPS == 1) {
-        remove_pcr_duplicates(base_quality_, 
-        use_bam_rgs_, rg_to_library, 
-        item.paired_strs_by_rg, item.mate_pairs_by_rg, 
-        item.unpaired_strs_by_rg, selective_logger());
-      }
-
-      return true;
-    }
- /**
-  * pipeline code ends
-  */
-
-
-  std::string cur_chrom = "", chrom_seq = "";
-  for (auto region_iter = regions.begin(); region_iter != regions.end(); region_iter++){
-    full_logger() << "" << "Processing region " << region_iter->chrom() << " " << region_iter->start() << " " << region_iter->stop() << std::endl;
-
-    if (region_iter->stop() - region_iter->start() > MAX_STR_LENGTH){
-      num_too_long_++;
-      full_logger() << "Skipping region as the reference allele length exceeds the threshold (" << region_iter->stop()-region_iter->start() << " vs " << MAX_STR_LENGTH << ")" << "\n"
-		    << "You can increase this threshold using the --max-str-len option" << std::endl;
-      continue;
-    }
-    
-    // Read FASTA sequence for chromosome 
-    if (region_iter->chrom().compare(cur_chrom) != 0){
-      cur_chrom = region_iter->chrom();
-      fasta_reader.get_sequence(cur_chrom, chrom_seq);
-      assert(chrom_seq.size() != 0);
-    }
-
-    if (region_iter->start() < 50 || region_iter->stop()+50 >= chrom_seq.size()){
-      full_logger() << "Skipping region within 50bp of the end of the contig" << std::endl;
-      continue;
-    }
-
-    locus_bam_seek_time_ = clock();
-    if (!reader.SetRegion(cur_chrom, (region_iter->start() < MAX_MATE_DIST ? 0: region_iter->start()-MAX_MATE_DIST),
-			  region_iter->stop() + MAX_MATE_DIST))
-      printErrorAndDie("One or more BAM files failed to set the region properly");
-
-    locus_bam_seek_time_  =  (clock() - locus_bam_seek_time_)/CLOCKS_PER_SEC;
-    total_bam_seek_time_ += locus_bam_seek_time_;
-
-    std::vector<std::string> rg_names;
-    std::vector<BamAlnList> paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg;
-    RegionGroup region_group(*region_iter); // TO DO: Extend region groups to have multiple regions
-    read_and_filter_reads(reader, chrom_seq, region_group, rg_to_sample, rg_names,
-			  paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg, pass_writer, filt_writer);
-
-    // The user specified a list of samples to which we need to restrict the analyses
-    // Discard reads for any samples not in this set
-    if (!sample_set_.empty()){
-      selective_logger() << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
-      unsigned int ins_index = 0;
-      for (unsigned int i = 0; i < rg_names.size(); i++){
-	if (sample_set_.find(rg_names[i]) != sample_set_.end()){
-	  if (i != ins_index){
-	    rg_names[ins_index]            = rg_names[i];
-	    paired_strs_by_rg[ins_index]   = paired_strs_by_rg[i];
-	    mate_pairs_by_rg[ins_index]    = mate_pairs_by_rg[i];
-	    unpaired_strs_by_rg[ins_index] = unpaired_strs_by_rg[i];
-	  }
-	  ins_index++;
-	}
-      }
-      if (ins_index != rg_names.size()){
-	rg_names.resize(ins_index);
-	paired_strs_by_rg.resize(ins_index);
-	mate_pairs_by_rg.resize(ins_index);
-	unpaired_strs_by_rg.resize(ins_index);
-      }
-    }
-
-    if (REMOVE_PCR_DUPS == 1)
-      remove_pcr_duplicates(base_quality_, use_bam_rgs_, rg_to_library, paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg, selective_logger());
-
-    process_reads(paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg, rg_names, region_group, chrom_seq);
-  }
 }
