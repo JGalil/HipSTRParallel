@@ -331,42 +331,39 @@ void HapAligner::process_reads(const std::vector<Alignment>& alignments, int ini
  * 
  */
 
- void HapAligner::process_reads_range(const std::vector<Alignment>& alignments,
-                                      int begin,
-                                      int end,
-                                      int init_read_index,
-                                      const BaseQuality* base_quality,
-                                      const std::vector<bool>& realign_read,
-                                      double* aln_probs,
-                                      int* seed_positions){
+void HapAligner::process_reads_range(const std::vector<Alignment>& alignments,
+				      int begin,
+				      int end,
+				      int init_read_index,
+				      const BaseQuality* base_quality,
+				      const std::vector<bool>& realign_read,
+				      double* aln_probs,
+				      int* seed_positions){
+  assert(begin >= 0);
+  assert(end >= begin);
+  assert(end <= (int)alignments.size());
+  assert(alignments.size() == realign_read.size());
 
-assert(begin >= 0);
-assert(end >= begin);
-assert(end <= (int)alignments.size());
-assert(alignments.size() == realign_read.size());
+  AlignmentTrace trace(fw_haplotype_->num_blocks());
+  double* prob_ptr = aln_probs + ((init_read_index+begin)*fw_haplotype_->num_combs());
+  for (int i = begin; i < end; i++){
+    if (!realign_read[i]) {
+      prob_ptr += fw_haplotype_->num_combs();
+      continue;
+    }
 
-AlignmentTrace trace(fw_haplotype_->num_blocks());
-double* prob_ptr = aln_probs + (init_read_index*fw_haplotype_->num_combs());
-for(int i = begin; i < end; i++){
-  if(!realign_read[i]) {
-    prob_ptr += fw_haplotype_->num_combs();
-    continue;
-  }
-
-  int seed_base = calc_seed_base(alignments[i]);
-  if(seed_base == -1){
+    int seed_base = calc_seed_base(alignments[i]);
+    seed_positions[init_read_index+i] = seed_base;
+    if (seed_base == -1){
       // Assign all haplotypes the same zero LL
-      for (unsigned int i = 0; i < fw_haplotype_->num_combs(); ++i, ++prob_ptr){
+      for (unsigned int hap_index = 0; hap_index < fw_haplotype_->num_combs(); ++hap_index, ++prob_ptr)
         *prob_ptr = 0;
-      }
+    }
+    else {
+      process_read(alignments[i], seed_base, base_quality, false, prob_ptr, trace);
+      prob_ptr += fw_haplotype_->num_combs();
+    }
   }
-  else{
-    process_read(alignments[i], seed_base, base_quality, false, prob_ptr, trace);
-    prob_ptr += fw_haplotype_->num_combs();
-  }
-}
-
-
 }
 
 const double TRACE_LL_TOL = 0.001;
