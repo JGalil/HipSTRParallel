@@ -5,7 +5,7 @@
 ## Default compilation flags.
 ## Override with:
 ##   make CXXFLAGS=XXXXX
-CXXFLAGS= -O3 -g -D__STDC_LIMIT_MACROS -D_FILE_OFFSET_BITS=64 -std=c++20 -DMACOSX -pthread #-pedantic -Wunreachable-code -Weverything
+CXXFLAGS= -O3 -g -D__STDC_LIMIT_MACROS -D_FILE_OFFSET_BITS=64 -std=c++20 -DMACOSX -pthread -I../taskflow #-pedantic -Wunreachable-code -Weverything
 
 ## To create a static distribution file, run:
 ##   make static-dist
