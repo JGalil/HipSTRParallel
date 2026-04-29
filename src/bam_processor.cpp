@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdlib.h>
 #include <time.h>
+#include <chrono>
 
 #include "bam_processor.h"
 #include "alignment_filters.h"
@@ -669,10 +670,14 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
       if (!work_items[pf.line()])
         return;
 
+      auto t0 = std::chrono::high_resolution_clock::now();
       std::unique_ptr<RegionResult> result(new RegionResult());
       process_region_item(*work_items[pf.line()], *result);
       work_items[pf.line()].reset();
       results[pf.line()] = std::move(result);
+      auto t1 = std::chrono::high_resolution_clock::now();
+      double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
+      full_logger() << "[line " << pf.line() << "] process_region_item: " << ms << " ms\n";
     }},
 
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
@@ -683,6 +688,15 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
     }}
   );
 
+  auto observer = executor.make_observer<tf::TFProfObserver>();
   taskflow.composed_of(pipeline);
+  auto wall_start = std::chrono::high_resolution_clock::now();
   executor.run(taskflow).wait();
+  auto wall_end = std::chrono::high_resolution_clock::now();
+  std::ofstream ofs("hipstr_parallel_profile.json");
+  observer->dump(ofs);
+
+  std::cout << "HipSTRParallel total wall time: "
+            << std::chrono::duration<double>(wall_end - wall_start).count()
+            << " s\n";
 }
