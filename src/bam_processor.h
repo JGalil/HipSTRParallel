@@ -13,6 +13,7 @@
 #include <taskflow/algorithm/pipeline.hpp>
 #include <atomic>
 
+#include "adapter_trimmer.h"
 #include "bam_io.h"
 #include "base_quality.h"
 #include "error.h"
@@ -62,6 +63,7 @@ class BamProcessor {
   virtual void init_output_vcf(const std::string& fasta_path, const std::vector<std::string>& chroms, const std::string& full_command) = 0;
 
  protected:
+ AdapterTrimmer adapter_trimmer_;
  BaseQuality base_quality_;
 
  bool bams_from_10x_; // True iff BAMs were generated from 10X GEMCODE platform
