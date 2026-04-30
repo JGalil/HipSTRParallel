@@ -39,14 +39,14 @@ void SNPBamProcessor::process_reads(std::vector<BamAlnList>& paired_strs_by_rg,
   std::vector<BamAlnList> alignments;
   std::vector< std::vector<double> > log_p1s, log_p2s;
   prepare_read_phasing(paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg,
-		       rg_names, region_group, chrom_seq, alignments, log_p1s, log_p2s);
+		       rg_names, region_group, chrom_seq, alignments, log_p1s, log_p2s, selective_logger());
   analyze_reads_and_phasing(alignments, log_p1s, log_p2s, rg_names, region_group, chrom_seq);
 }
 
-bool SNPBamProcessor::prepare_region_work_item(RegionWorkItem& item){
+bool SNPBamProcessor::prepare_region_work_item(RegionWorkItem& item, std::ostream& logger){
   bool prepared = prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
 				      item.rg_names, item.region_group, item.chrom_seq,
-				      item.alignments, item.log_p1s, item.log_p2s);
+				      item.alignments, item.log_p1s, item.log_p2s, logger);
   item.snp_phase_info_time = locus_snp_phase_info_time_;
   return prepared;
 }
@@ -59,7 +59,8 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 					   const std::string& chrom_seq,
 					   std::vector<BamAlnList>& alignments,
 					   std::vector< std::vector<double> >& log_p1s,
-					   std::vector< std::vector<double> >& log_p2s){
+					   std::vector< std::vector<double> >& log_p2s,
+					   std::ostream& logger){
   if (bams_from_10x_){
     locus_snp_phase_info_time_ = clock();
     assert(paired_strs_by_rg.size() == mate_pairs_by_rg.size() && paired_strs_by_rg.size() == unpaired_strs_by_rg.size());
@@ -103,7 +104,7 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
       }
     }
 
-    selective_logger() << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads" << std::endl;
+    logger << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads" << std::endl;
     locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
     total_snp_phase_info_time_ += locus_snp_phase_info_time_;
     return true;
@@ -151,10 +152,10 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 	alignments[i].insert(alignments[i].end(), paired_strs_by_rg[i].begin(),   paired_strs_by_rg[i].end());
 	alignments[i].insert(alignments[i].end(), unpaired_strs_by_rg[i].begin(), unpaired_strs_by_rg[i].end());
       }
-      selective_logger() << "Found VCF info for " << good_samples.size() << " out of " << good_samples.size()+bad_samples.size() << " samples with STR reads" << std::endl;
+      logger << "Found VCF info for " << good_samples.size() << " out of " << good_samples.size()+bad_samples.size() << " samples with STR reads" << std::endl;
     }
     else 
-      selective_logger() << "Warning: Failed to construct SNP trees for " << region_group.chrom() << ":" << region_group.start() << "-" << region_group.stop() << std::endl;
+      logger << "Warning: Failed to construct SNP trees for " << region_group.chrom() << ":" << region_group.start() << "-" << region_group.stop() << std::endl;
     destroy_snp_trees(snp_trees);      
   }
   if (!got_snp_info){
@@ -180,7 +181,7 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
     phased_samples += sample_phased;
   }
 
-  selective_logger() << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads"
+  logger << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads"
 		     << " and " << phased_samples << " out of " << rg_names.size() <<  " samples" << std::endl;
 
   locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;

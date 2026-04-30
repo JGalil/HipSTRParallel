@@ -391,6 +391,7 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 }
 
 void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResult& result){
+  result.log_text = item.log_text;
   result.bam_seek_time = item.bam_seek_time;
   result.read_filter_time = item.read_filter_time;
   result.snp_phase_info_time = item.snp_phase_info_time;

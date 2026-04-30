@@ -189,7 +189,7 @@ bool BamProcessor::spans_a_region(const std::vector<Region>& regions, BamAlignme
 void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::string& chrom_seq, const RegionGroup& region_group,
 					 const std::map<std::string, std::string>& rg_to_sample, std::vector<std::string>& rg_names,
 					 std::vector<BamAlnList>& paired_strs_by_rg, std::vector<BamAlnList>& mate_pairs_by_rg, std::vector<BamAlnList>& unpaired_strs_by_rg,
-					 BamWriter* pass_writer, BamWriter* filt_writer){
+					 BamWriter* pass_writer, BamWriter* filt_writer, std::ostream& logger){
   locus_read_filter_time_ = clock();
   assert(reader.get_merge_type() == BamCramMultiReader::ORDER_ALNS_BY_FILE);
 
@@ -435,16 +435,16 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
   }
   potential_strs.clear(); potential_mates.clear();
   
-  selective_logger() << read_count << " reads overlapped region, of which "
+  logger << read_count << " reads overlapped region, of which "
 		     << "\n\t" << hard_clip      << " were hard clipped"
 		     << "\n\t" << read_has_N     << " had an 'N' base call"
 		     << "\n\t" << low_qual_score << " had low base quality scores";
   if (REQUIRE_SPANNING == 1)
-    selective_logger() << "\n\t" << not_spanning << " did not span the STR";
-  selective_logger() << "\n\t" << unique_mapping << " did not have a unique mapping";
+    logger << "\n\t" << not_spanning << " did not span the STR";
+  logger << "\n\t" << unique_mapping << " did not have a unique mapping";
   if (REQUIRE_PAIRED_READS)
-    selective_logger() << "\n\t" << num_filt_unpaired_reads << " did not have a mate pair";
-  selective_logger() << "\n\t" << (paired_str_alns.size()+unpaired_str_alns.size()) << " PASSED ALL FILTERS" << "\n"
+    logger << "\n\t" << num_filt_unpaired_reads << " did not have a mate pair";
+  logger << "\n\t" << (paired_str_alns.size()+unpaired_str_alns.size()) << " PASSED ALL FILTERS" << "\n"
 		     << "Found " << paired_str_alns.size() << " fully paired reads and " << unpaired_str_alns.size() << " unpaired reads for downstream analyses" << std::endl;
     
   // Separate the reads based on their associated read groups
@@ -537,6 +537,7 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 const std::string& chrom_seq,
 					 BamWriter* pass_writer,
 					 BamWriter* filt_writer,
+					 std::ostream& logger,
 					 RegionWorkItem& item) {
   item.chrom_seq = chrom_seq;
 
@@ -550,14 +551,14 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 
   read_and_filter_reads(reader, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
 			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
-			pass_writer, filt_writer);
+			pass_writer, filt_writer, logger);
   item.too_many_reads = TOO_MANY_READS;
   item.bam_seek_time = locus_bam_seek_time_;
   item.read_filter_time = locus_read_filter_time_;
 
   // The user specified a list of samples to which we need to restrict the analyses.
   if (!sample_set_.empty()){
-    selective_logger() << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
+    logger << "Restricting reads to the " << sample_set_.size() << " samples in the specified sample list" << std::endl;
     unsigned int ins_index = 0;
     for (unsigned int i = 0; i < item.rg_names.size(); i++){
       if (sample_set_.find(item.rg_names[i]) != sample_set_.end()){
@@ -581,7 +582,7 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
   if (REMOVE_PCR_DUPS == 1)
     remove_pcr_duplicates(base_quality_, use_bam_rgs_, rg_to_library,
 			  item.paired_strs_by_rg, item.mate_pairs_by_rg,
-			  item.unpaired_strs_by_rg, selective_logger());
+			  item.unpaired_strs_by_rg, logger);
 
   return true;
 }
@@ -632,16 +633,21 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
 
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
       work_items[pf.line()].reset();
+      results[pf.line()].reset();
 
       while (next_region < regions.size()){
         const Region& region = regions[next_region++];
-        full_logger() << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << std::endl;
+        std::ostringstream region_log;
+        region_log << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << std::endl;
 
         if (region.stop() - region.start() > MAX_STR_LENGTH){
           num_too_long_++;
-          full_logger() << "Skipping region as the reference allele length exceeds the threshold (" << region.stop()-region.start() << " vs " << MAX_STR_LENGTH << ")" << "\n"
+          region_log << "Skipping region as the reference allele length exceeds the threshold (" << region.stop()-region.start() << " vs " << MAX_STR_LENGTH << ")" << "\n"
             << "You can increase this threshold using the --max-str-len option" << std::endl;
-          continue;
+          std::unique_ptr<RegionResult> result(new RegionResult());
+          result->log_text = region_log.str();
+          results[pf.line()] = std::move(result);
+          return;
         }
 
         if (region.chrom().compare(cur_chrom) != 0){
@@ -651,14 +657,18 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
         }
 
         if (region.start() < 50 || region.stop()+50 >= chrom_seq.size()){
-          full_logger() << "Skipping region within 50bp of the end of the contig" << std::endl;
-          continue;
+          region_log << "Skipping region within 50bp of the end of the contig" << std::endl;
+          std::unique_ptr<RegionResult> result(new RegionResult());
+          result->log_text = region_log.str();
+          results[pf.line()] = std::move(result);
+          return;
         }
 
         std::unique_ptr<RegionWorkItem> item(new RegionWorkItem(RegionGroup(region)));
         if (make_region_work_item(reader, rg_to_sample, rg_to_library, region, chrom_seq,
-                pass_writer, filt_writer, *item) &&
-            prepare_region_work_item(*item)){
+                pass_writer, filt_writer, region_log, *item) &&
+            prepare_region_work_item(*item, region_log)){
+          item->log_text = region_log.str();
           work_items[pf.line()] = std::move(item);
           return;
         }
@@ -668,9 +678,9 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
     }},
 
     tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
-      results[pf.line()].reset();
       if (!work_items[pf.line()])
         return;
+      results[pf.line()].reset();
 
       auto t0 = std::chrono::high_resolution_clock::now();
       std::unique_ptr<RegionResult> result(new RegionResult());
@@ -698,7 +708,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
   std::ofstream ofs("hipstr_parallel_profile.tfp", std::ios::binary);
   observer->dump(ofs);
 
-  std::cout << "HipSTRParallel total wall time: "
-            << std::chrono::duration<double>(wall_end - wall_start).count()
-            << " s\n";
+  full_logger() << "HipSTRParallel total wall time: "
+                << std::chrono::duration<double>(wall_end - wall_start).count()
+                << " s\n";
 }

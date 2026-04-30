@@ -6,10 +6,12 @@
 #include <memory>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <taskflow/taskflow.hpp>
 #include <taskflow/algorithm/pipeline.hpp>
+#include <atomic>
 
 #include "bam_io.h"
 #include "base_quality.h"
@@ -45,7 +47,7 @@ class BamProcessor {
   void read_and_filter_reads(BamCramMultiReader& reader, const std::string& chrom_seq, const RegionGroup& region,
 			     const std::map<std::string, std::string>& rg_to_sample, std::vector<std::string>& rg_names,
 			     std::vector<BamAlnList>& paired_strs_by_rg, std::vector<BamAlnList>& mate_pairs_by_rg, std::vector<BamAlnList>& unpaired_strs_by_rg,
-			     BamWriter* pass_writer, BamWriter* filt_writer);
+			     BamWriter* pass_writer, BamWriter* filt_writer, std::ostream& logger);
 
  std::string get_read_group(const BamAlignment& aln, const std::map<std::string, std::string>& read_group_mapping) const;
 
@@ -190,7 +192,8 @@ class BamProcessor {
 	    std::vector<BamProcessor::BamAlnList> alignments;
 	    std::vector< std::vector<double> > log_p1s;
 	    std::vector< std::vector<double> > log_p2s;
-	    bool too_many_reads;
+	    std::atomic<bool> too_many_reads;
+	    std::string log_text;
 	    double bam_seek_time = 0;
 	    double read_filter_time = 0;
 	    double snp_phase_info_time = 0;
@@ -242,13 +245,14 @@ class BamProcessor {
 	    BamCramMultiReader& reader,
 	    const std::map<std::string, std::string>& rg_to_sample,
 	    const std::map<std::string, std::string>& rg_to_library,
-    const Region& region,
-    const std::string& chrom_seq,
+	    const Region& region,
+	    const std::string& chrom_seq,
 	    BamWriter* pass_writer,
 	    BamWriter* filt_writer,
+	    std::ostream& logger,
 	    RegionWorkItem& item);
 
-	  virtual bool prepare_region_work_item(RegionWorkItem& item) { return true; }
+	  virtual bool prepare_region_work_item(RegionWorkItem& item, std::ostream& logger) { return true; }
 
 	  virtual void process_region_item(
 	    RegionWorkItem& item,

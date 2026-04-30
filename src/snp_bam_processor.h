@@ -58,9 +58,10 @@ protected:
 				  const std::string& chrom_seq,
 				  std::vector<BamAlnList>& alignments,
 				  std::vector< std::vector<double> >& log_p1s,
-				  std::vector< std::vector<double> >& log_p2s);
+				  std::vector< std::vector<double> >& log_p2s,
+				  std::ostream& logger);
 
-	bool prepare_region_work_item(RegionWorkItem& item);
+	bool prepare_region_work_item(RegionWorkItem& item, std::ostream& logger);
 
 public:
  SNPBamProcessor(bool use_bam_rgs, bool remove_pcr_dups) : BamProcessor(use_bam_rgs, remove_pcr_dups){

@@ -2,6 +2,7 @@
 #include <cfloat>
 #include <cstring>
 #include <math.h>
+#include <mutex>
 #include <random>
 #include <string>
 #include <sstream>
@@ -30,6 +31,9 @@
 #include "cephes/cephes.h"
 #include "htslib/htslib/kfunc.h"
 
+namespace {
+std::mutex cephes_mutex;
+}
 
 int max_index(double* vals, unsigned int num_vals){
   int best_index = 0;
@@ -974,7 +978,11 @@ double SeqStutterGenotyper::compute_allele_bias(int hap_a_read_count, int hap_b_
     return 0.0;
 
   int min_count = std::min(hap_a_read_count, hap_b_read_count);
-  double pvalue = 2*bdtr(min_count, total, 0.5); // Two-sided pvalue
+  double pvalue;
+  {
+    std::lock_guard<std::mutex> lock(cephes_mutex);
+    pvalue = 2*bdtr(min_count, total, 0.5); // Two-sided pvalue
+  }
   return log10(std::min(1.0, pvalue));
 }
 
