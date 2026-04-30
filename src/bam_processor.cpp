@@ -7,6 +7,7 @@
 #include <chrono>
 
 #include "bam_processor.h"
+#include "adapter_trimmer.h"
 #include "alignment_filters.h"
 #include "error.h"
 #include "fasta_reader.h"
@@ -205,6 +206,10 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
   std::string file_label = "0_";
 
   while (reader.GetNextAlignment(alignment)){
+    // Discard reads where the 1st/2nd mate info isn't clear
+    if (alignment.IsPaired() && (!alignment.IsFirstMate() && !alignment.IsSecondMate()))
+      continue;
+
     // Discard reads that don't overlap the STR region and whose mate pair has no chance of overlapping the region
     if (alignment.Position() > region_group.stop() || alignment.GetEndPosition() < region_group.start()){
       if (!alignment.IsPaired() || alignment.MatePosition() == alignment.Position())
@@ -242,6 +247,12 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	  if ((alignment.Length() == 0) || (alignment.Length() < length/2))
 	    continue;
       }
+
+      // Apply adapter trimming
+      adapter_trimmer_.trim_adapters(alignment);
+
+      if (alignment.CigarData().size() == 0 || alignment.Length() == 0)
+	continue;
     }
 
     // Clear out mate alignment cache if we've switched to a new file to reduce memory usage
@@ -435,7 +446,8 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
   }
   potential_strs.clear(); potential_mates.clear();
   
-  logger << read_count << " reads overlapped region, of which "
+  logger << adapter_trimmer_.get_trimming_stats_msg() << "\n"
+		     << read_count << " reads overlapped region, of which "
 		     << "\n\t" << hard_clip      << " were hard clipped"
 		     << "\n\t" << read_has_N     << " had an 'N' base call"
 		     << "\n\t" << low_qual_score << " had low base quality scores";
@@ -552,6 +564,7 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
   read_and_filter_reads(reader, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
 			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
 			pass_writer, filt_writer, logger);
+  adapter_trimmer_.mark_new_locus();
   item.too_many_reads = TOO_MANY_READS;
   item.bam_seek_time = locus_bam_seek_time_;
   item.read_filter_time = locus_read_filter_time_;
