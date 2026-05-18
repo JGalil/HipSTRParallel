@@ -19,6 +19,14 @@ const std::string ALT_MAP_TAG           = "XA";
 const std::string PRIMARY_ALN_SCORE_TAG = "AS";
 const std::string SUBOPT_ALN_SCORE_TAG  = "XS";
 
+//timing helper function
+
+static double elapsed_second(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - start
+  ).count();
+}
+
 void BamProcessor::add_passes_filters_tag(BamAlignment& aln, const std::string& passes){
   if (aln.HasTag("PF"))
     if (!aln.RemoveTag("PF"))
@@ -39,6 +47,7 @@ void BamProcessor::passes_filters(BamAlignment& aln, std::vector<bool>& region_p
 void BamProcessor::write_passing_alignment(BamAlignment& aln, BamWriter* writer){
   if (writer == NULL)
     return;
+  std::lock_guard<std::mutex> lock(bam_writer_mutex_);
   if (!writer->SaveAlignment(aln))
     printErrorAndDie("Failed to save alignment");
 }
@@ -46,6 +55,8 @@ void BamProcessor::write_passing_alignment(BamAlignment& aln, BamWriter* writer)
 void BamProcessor::write_filtered_alignment(BamAlignment& aln, std::string filter, BamWriter* writer){
   if (writer == NULL)
     return;
+
+  std::lock_guard<std::mutex> lock(bam_writer_mutex_);
 
   if (aln.HasTag("FT"))
     if (!aln.RemoveTag("FT"))
@@ -187,18 +198,19 @@ bool BamProcessor::spans_a_region(const std::vector<Region>& regions, BamAlignme
   return false;
 }
 
-void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::string& chrom_seq, const RegionGroup& region_group,
+bool BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, AdapterTrimmer& adapter_trimmer, const std::string& chrom_seq, const RegionGroup& region_group,
 					 const std::map<std::string, std::string>& rg_to_sample, std::vector<std::string>& rg_names,
 					 std::vector<BamAlnList>& paired_strs_by_rg, std::vector<BamAlnList>& mate_pairs_by_rg, std::vector<BamAlnList>& unpaired_strs_by_rg,
-					 BamWriter* pass_writer, BamWriter* filt_writer, std::ostream& logger){
-  locus_read_filter_time_ = clock();
+					 std::vector<BamAlignment>& passing_bam_records,
+           std::vector<FilteredBamRecord>& filtered_bam_records, std::ostream& logger){
   assert(reader.get_merge_type() == BamCramMultiReader::ORDER_ALNS_BY_FILE);
 
   int32_t read_count = 0, not_spanning = 0, unique_mapping = 0, read_has_N = 0, hard_clip = 0, low_qual_score = 0, num_filt_unpaired_reads = 0;
   BamAlignment alignment;
   BamAlnList paired_str_alns, mate_alns, unpaired_str_alns;
   std::map<std::string, BamAlignment> potential_strs, potential_mates;
-  TOO_MANY_READS = false;
+  bool TOO_MANY_READS = false;
+
 
   const std::vector<Region>& regions = region_group.regions();
   std::string prev_file  = "";
@@ -237,7 +249,10 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	if (alignment.StartsWithHardClip() || alignment.EndsWithHardClip()){
 	  read_count++;
 	  hard_clip++;
-	  write_filtered_alignment(alignment, "HARD_CLIPPED", filt_writer);
+	  //write_filtered_alignment(alignment, "HARD_CLIPPED", filt_writer);
+    if (filt_writer_ != NULL){
+      filtered_bam_records.push_back({alignment, "HARD_CLIPPED"});
+    }
 	  continue;
 	}
 
@@ -249,7 +264,8 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
       }
 
       // Apply adapter trimming
-      adapter_trimmer_.trim_adapters(alignment);
+      adapter_trimmer.trim_adapters(alignment);
+      logger << adapter_trimmer.get_trimming_stats_msg() << "\n";
 
       if (alignment.CigarData().size() == 0 || alignment.Length() == 0)
 	continue;
@@ -294,8 +310,8 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 
       if (pass_one){
 	// Determine whether we can use the read for haplotype generation for each region in the group
-	int region_index = 0;
-	for (auto region_iter = regions.begin(); region_iter != regions.end(); ++region_iter, ++region_index){
+	int region_idx = 0;
+	for (auto region_iter = regions.begin(); region_iter != regions.end(); ++region_iter, ++region_idx){
 	  if ((MIN_FLANK > 0) && (alignment.Position() > (region_iter->start()-MIN_FLANK) || alignment.GetEndPosition() < (region_iter->stop()+MIN_FLANK)))
 	    continue;
 
@@ -323,7 +339,7 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	      break;
 	    }
 	  }
-	  pass_two[region_index] = '1';
+	  pass_two[region_idx] = '1';
 	}
       }
 
@@ -343,13 +359,23 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	  if (p_1.size() == 1 && p_1[0].second == alignment.Position()){
 	    paired_str_alns.push_back(alignment);
 	    mate_alns.push_back(aln_iter->second);
-	    write_passing_alignment(alignment, pass_writer);
-	    write_passing_alignment(aln_iter->second, pass_writer);
+	    //write_passing_alignment(alignment, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(alignment);
+      }
+	    //write_passing_alignment(aln_iter->second, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(aln_iter->second);
+      }
+
 	  }
 	  else {
 	    unique_mapping++;
 	    filter.append("NO_UNIQUE_MAPPING");
-	    write_filtered_alignment(alignment, filter, filt_writer);
+	    //write_filtered_alignment(alignment, filter, filt_writer);
+      if (filt_writer_ != NULL){
+        filtered_bam_records.push_back({alignment, filter});
+      }
 	  }
 	  potential_mates.erase(aln_iter);
 	}
@@ -367,17 +393,28 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	    if (p_1.size() == 1 && p_1[0].second == alignment.Position()){
 	      paired_str_alns.push_back(alignment);
 	      mate_alns.push_back(str_iter->second);
-	      write_passing_alignment(alignment, pass_writer);
-
+	      //write_passing_alignment(alignment, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(alignment);
+      }
 	      paired_str_alns.push_back(str_iter->second);
 	      mate_alns.push_back(alignment);
-	      write_passing_alignment(str_iter->second, pass_writer);
+	      //write_passing_alignment(str_iter->second, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(str_iter->second);
+      }
 	    }
 	    else {
 	      unique_mapping += 2;
 	      std::string filter = "NO_UNIQUE_MAPPING";
-	      write_filtered_alignment(alignment, filter, filt_writer);
-	      write_filtered_alignment(str_iter->second, filter, filt_writer);
+	      //write_filtered_alignment(alignment, filter, filt_writer);
+        if (filt_writer_ != NULL){
+          filtered_bam_records.push_back({alignment, filter});
+        }
+	      //write_filtered_alignment(str_iter->second, filter, filt_writer);
+        if (filt_writer_ != NULL){
+          filtered_bam_records.push_back({str_iter->second, filter});
+        }
 	    }
 	    potential_strs.erase(str_iter);
 	  }
@@ -387,7 +424,10 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
       }
       else {
 	assert(!filter.empty());
-	write_filtered_alignment(alignment, filter, filt_writer);
+	//write_filtered_alignment(alignment, filter, filt_writer);
+  if (filt_writer_ != NULL){
+    filtered_bam_records.push_back({alignment, filter});
+  }
 	potential_mates.insert(std::pair<std::string, BamAlignment>(aln_key, alignment));
       }
     }
@@ -403,13 +443,22 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 	if (p_1.size() == 1 && p_1[0].second == aln_iter->second.Position()){
 	  paired_str_alns.push_back(aln_iter->second);
 	  mate_alns.push_back(alignment);
-	  write_passing_alignment(aln_iter->second, pass_writer);
-	  write_passing_alignment(alignment, pass_writer);
+	  //write_passing_alignment(aln_iter->second, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(aln_iter->second);
+      }
+	  //write_passing_alignment(alignment, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(alignment);
+      }
 	}
 	else {
 	  unique_mapping++;
 	  std::string filter = "NO_UNIQUE_MAPPING";
-	  write_filtered_alignment(aln_iter->second, filter, filt_writer);
+	  //write_filtered_alignment(aln_iter->second, filter, filt_writer);
+    if (filt_writer_ != NULL){
+      filtered_bam_records.push_back({aln_iter->second, filter});
+    }
 	}
 	potential_strs.erase(aln_iter);
       }
@@ -439,14 +488,20 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
 
     if (filter.empty()){
       unpaired_str_alns.push_back(aln_iter->second);
-      write_passing_alignment(aln_iter->second, pass_writer);
+      //write_passing_alignment(aln_iter->second, pass_writer);
+      if(pass_writer_ != NULL){
+        passing_bam_records.push_back(aln_iter->second);
+      }
     }
     else
       write_filtered_alignment(aln_iter->second, filter, filt_writer);
+      if (filt_writer_ != NULL){
+        filtered_bam_records.push_back({aln_iter->second, filter});
+      }
   }
   potential_strs.clear(); potential_mates.clear();
   
-  logger << adapter_trimmer_.get_trimming_stats_msg() << "\n"
+  logger << adapter_trimmer.get_trimming_stats_msg() << "\n"
 		     << read_count << " reads overlapped region, of which "
 		     << "\n\t" << hard_clip      << " were hard clipped"
 		     << "\n\t" << read_has_N     << " had an 'N' base call"
@@ -492,8 +547,7 @@ void BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, const std::
     }
   }
 
-  locus_read_filter_time_  = (clock() - locus_read_filter_time_)/CLOCKS_PER_SEC;
-  total_read_filter_time_ += locus_read_filter_time_;
+  return TOO_MANY_READS;
 }
 
 // Ensure that all of the chromosomes are present in i) the FASTA file, ii) the BAM files and iii) the SNP VCF file, if provided
@@ -543,6 +597,7 @@ void BamProcessor::verify_chromosomes(const std::vector<std::string>& chroms, co
 }
 
 bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
+           AdapterTrimmer& adapter_trimmer,
 					 const std::map<std::string, std::string>& rg_to_sample,
 					 const std::map<std::string, std::string>& rg_to_library,
 					 const Region& region,
@@ -553,21 +608,19 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 RegionWorkItem& item) {
   item.chrom_seq = chrom_seq;
 
-  locus_bam_seek_time_ = clock();
+  auto seek_start = stdL::chrono::steady_clock::now();
   if (!reader.SetRegion(region.chrom(), (region.start() < MAX_MATE_DIST ? 0 : region.start()-MAX_MATE_DIST),
 			region.stop() + MAX_MATE_DIST))
     printErrorAndDie("One or more BAM files failed to set the region properly");
 
-  locus_bam_seek_time_  = (clock() - locus_bam_seek_time_)/CLOCKS_PER_SEC;
-  total_bam_seek_time_ += locus_bam_seek_time_;
+  item.bam_seek_time = elapsed_seconds(seek_start);
 
-  read_and_filter_reads(reader, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
+  double filter_start = std::chrono::steady_clock::now();
+  item.too_many_reads = read_and_filter_reads(reader, adapter_trimmer, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
 			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
-			pass_writer, filt_writer, logger);
-  adapter_trimmer_.mark_new_locus();
-  item.too_many_reads = TOO_MANY_READS;
-  item.bam_seek_time = locus_bam_seek_time_;
-  item.read_filter_time = locus_read_filter_time_;
+			item.passing_bam_records, item.filtered_bam_records, logger);
+  adapter_trimmer.mark_new_locus();
+  item.read_filter_time = elapsed_seconds(filter_start);
 
   // The user specified a list of samples to which we need to restrict the analyses.
   if (!sample_set_.empty()){
@@ -602,12 +655,21 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 
 
 
-void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string& region_file, const std::string& fasta_file,
-					   const std::map<std::string, std::string>& rg_to_sample, const std::map<std::string, std::string>& rg_to_library, const std::string& full_command,
-					   BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, const std::string& chrom){
+void BamProcessor::process_regions(BamCramMultiReader& reader, 
+             const std::vector<std::string>& bam_files,
+             const std::string& cram_fasta_path,
+             const std::string& region_file, const std::string& fasta_file,
+					   const std::map<std::string, std::string>& rg_to_sample, 
+             const std::map<std::string, std::string>& rg_to_library, 
+             const std::string& full_command,
+					   BamWriter* pass_writer, BamWriter* filt_writer, 
+             int32_t max_regions, const std::string& chrom){
   std::vector<Region> regions;
   readRegions(region_file, max_regions, chrom, regions, full_logger());
   orderRegions(regions);
+
+  pass_writer_ = pass_writer;
+  filt_writer_ = filt_writer;
 
   FastaReader fasta_reader(fasta_file);
   const BamHeader* bam_header = reader.bam_header();
@@ -628,88 +690,199 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
   // Add the chromosome information to the VCF
   init_output_vcf(fasta_file, chroms, full_command);
 
+  //region ordering
+  std::map<size_t, std::unique_ptr<RegionResult>> pending_results;
+  size_t next_result_to_write = 0;
+
+  auto flush_ready_results = [&]() {
+    while(true) {
+      auto iter = pending_results.find(next_result_to_write);
+      if(iter == pending_results.end()) break;
+
+      write_region_result(*iter->second);
+      pending_results.erase(iter);
+      ++next_result_to_write;
+    }
+  };
+
+  
+  //one executor with pipeline_lines worker threads
   size_t pipeline_lines = std::max<size_t>(1, NUM_THREADS);
   tf::Executor executor(pipeline_lines);
   tf::Taskflow taskflow;
   std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
   std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
 
-  size_t next_region = 0;
-  std::string cur_chrom = "", chrom_seq = "";
+  /**
+   * per-line independent readers - each opens same BAM files independently
+   * get BAM file list and CRAM reference from original reader
+   */
+
+  int merge_type = BamCramMultiReader::ORDER_ALNS_BY_FILE;
+
+  std::vector<std::unique_ptr<BamCramMultiReader>> readers(pipeline_lines);
+  for(size_t i = 0; i < pipeline_lines; i++){
+    readers[i] = std::make_unique<BamCramMultiReader>(bam_files, cram_fasta_path, merge_type);
+  }
+
+  //per-line FASTA readers and chrom seqs
+  std::vector<std::unique_ptr<FastaReader>> fasta_readers;
+  std::vector<std::string> cur_chroms(pipeline_lines, "");
+  std::vector<std::string> chrom_seqs(pipeline_lines, "");
+  for(size_t i = 0; i < pipeline_lines; i++){
+    fasta_readers.push_back(std::make_unique<FastaReader>(fasta_file));
+  }
+
+  std::vector<std::unique_ptr<AdapterTrimmer>> adapter_trimmers;
+  adapter_trimmers.reserve(pipeline_lines);
+
+  for (size_t i = 0; i < pipeline_lines; ++i) {
+    adapter_trimmers.push_back(std::make_unique<AdapterTrimmer>());
+  }
+
+  //atomic region counter -> each pipeline line grabs next region independently
+  std::atomic<size_t> next_region{0};
+
 
   /**
    * PIPELINE CODE
    */
+      //contexts for each line
+      std::vector<PipelineLineContext> contexts(pipeline_lines);
+      for (size_t i = 0; i < pipeline_lines; i++){
+        contexts[i].reader.reset(new BamCramMultiReader(bam_files, cram_fasta_path, merge_type));
+        contexts[i].fasta_reader.reset(new FastaReader(fasta_file));
+        contexts[i].adapter_trimmer.reset(new AdapterTrimmer());
+      }
 
   tf::Pipeline pipeline(
     pipeline_lines,
-
-    tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
+    //STAGE 0
+    tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
       work_items[pf.line()].reset();
       results[pf.line()].reset();
+      //contexts -> still working this out
+      auto& ctx = contexts[pf.line()];
+      ctx.work_item.reset();
+      ctx.result.reset();
 
-      while (next_region < regions.size()){
-        const Region& region = regions[next_region++];
-        std::ostringstream region_log;
-        region_log << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << std::endl;
 
+
+      while (true){
+        size_t my_idx = next_region.fetch_add(1);
+        if(my_idx >= regions.size()){
+          pf.stop();
+          return;
+        }
+
+
+        const Region& region = regions[my_idx];
+
+        //per-line log buffer
+        std::ostringstream line_log;
+        line_log << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << "\n";
+        //longer than max string length
+        //result needed because of logs/outputs
         if (region.stop() - region.start() > MAX_STR_LENGTH){
           num_too_long_++;
-          region_log << "Skipping region as the reference allele length exceeds the threshold (" << region.stop()-region.start() << " vs " << MAX_STR_LENGTH << ")" << "\n"
-            << "You can increase this threshold using the --max-str-len option" << std::endl;
-          std::unique_ptr<RegionResult> result(new RegionResult());
-          result->log_text = region_log.str();
+          //add context?
+          auto result = std::make_unique<RegionResult>();
+          result->region_idx = my_idx;
+          result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +
+            std::to_string(region.stop() - region.start()) +
+            " vs " + std::to_string(MAX_STR_LENGTH) + ")\n"
+            "You can increase this threshold using the --max-str-len option\n";
           results[pf.line()] = std::move(result);
           return;
         }
 
-        if (region.chrom().compare(cur_chrom) != 0){
-          cur_chrom = region.chrom();
-          fasta_reader.get_sequence(cur_chrom, chrom_seq);
-          assert(chrom_seq.size() != 0);
+        //per-line Fasta, no sharing betw lines
+        //double check how contexts is working here
+        //region chrom is not current
+        if (region.chrom().compare(*ctx.cur_chrom) != 0){
+          *ctx.cur_chrom = region.chrom();
+          *ctx.fasta_reader->get_sequence(*ctx.cur_chrom, *ctx.chroms_seq);
+          assert(*ctx.chroms_seq.size() != 0);
         }
+        //region within 50bp of end of contig
+        if (region.start() < 50 || region.stop()+50 >= *ctx.chroms_seq.size()){
+          line_log << "Skipping region within 50bp of the end of the contig\n";
+          auto result = std::make_unique<RegionResult>();
+          result->region_idx = my_idx;
+          result->log_text = line_log.str() + "...skipped for being within 50bp of end of the contig...\n";
 
-        if (region.start() < 50 || region.stop()+50 >= chrom_seq.size()){
-          region_log << "Skipping region within 50bp of the end of the contig" << std::endl;
-          std::unique_ptr<RegionResult> result(new RegionResult());
-          result->log_text = region_log.str();
           results[pf.line()] = std::move(result);
           return;
         }
+        auto item = std::make_unique<RegionWorkItem>(my_idx, RegionGroup(region));
+        item->region_idx = my_idx;
 
-        std::unique_ptr<RegionWorkItem> item(new RegionWorkItem(RegionGroup(region)));
-        if (make_region_work_item(reader, rg_to_sample, rg_to_library, region, chrom_seq,
-                pass_writer, filt_writer, region_log, *item) &&
-            prepare_region_work_item(*item, region_log)){
-          item->log_text = region_log.str();
+        //use this line's own reader, no sharing
+        bool ok = make_region_work_item(*ctx.reader, **ctx.adapter_trimmer, rg_to_sample, rg_to_library, 
+                region, *ctx.chroms_seq,
+                pass_writer, filt_writer, line_log, *item) &&
+                prepare_region_work_item(*item, line_log);
+        if (ok) {
+          item->log_text = line_log.str();
           work_items[pf.line()] = std::move(item);
           return;
         }
+        auto result = std::make_unique<RegionResult>();
+        result->region_idx = my_idx;
+        result->log_text = line_log.str();
+        results[pf.line()] = std::move(result);
+
+        item->log_text = line_log.str();
+        return;
       }
+
+
+      
 
       pf.stop();
     }},
-
+    //STAGE 1
     tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
       if (!work_items[pf.line()])
         return;
       results[pf.line()].reset();
+      auto& ctx = contexts[pf.line()];
+      ctx.work_item.reset();
+      ctx.result.reset();
+
+
 
       auto t0 = std::chrono::high_resolution_clock::now();
       std::unique_ptr<RegionResult> result(new RegionResult());
       process_region_item(*work_items[pf.line()], *result);
+      result->region_idx = work_items[pf.line()]->region_idx;
       work_items[pf.line()].reset();
       auto t1 = std::chrono::high_resolution_clock::now();
       double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
       result->log_text += "[line " + std::to_string(pf.line()) + "] process_region_item: " + std::to_string(ms) + " ms\n";
+
+      // if(!result.log_text.empty()){
+      //   selective_logger() << result.log_text;
+      // }
+      //^ old logging
+
       results[pf.line()] = std::move(result);
     }},
-
+    //STAGE 2
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
-      if (results[pf.line()]){
-	write_region_result(*results[pf.line()]);
-	results[pf.line()].reset();
-      }
+
+      auto& ctx = contexts[pf.line()];
+      ctx.work_item.reset();
+      ctx.result.reset();
+      if (!results[pf.line()])
+        return;
+
+      size_t idx = results[pf.line()]->region_idx;
+      pending_results[idx] = std::move(results[pf.line()]);
+      flush_ready_results();
+      
+      
+
     }}
   );
 
@@ -717,11 +890,12 @@ void BamProcessor::process_regions(BamCramMultiReader& reader, const std::string
   taskflow.composed_of(pipeline);
   auto wall_start = std::chrono::high_resolution_clock::now();
   executor.run(taskflow).wait();
+  flush_ready_results();
   auto wall_end = std::chrono::high_resolution_clock::now();
   std::ofstream ofs("hipstr_parallel_profile.tfp", std::ios::binary);
   observer->dump(ofs);
 
-  full_logger() << "HipSTRParallel total wall time: "
+  item->log_text = "HipSTRParallel total wall time: "
                 << std::chrono::duration<double>(wall_end - wall_start).count()
                 << " s\n";
 }

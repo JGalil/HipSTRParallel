@@ -555,7 +555,11 @@ int main(int argc, char** argv){
   }
 
   // Run analysis
-  bam_processor.process_regions(reader, region_file, fasta_file, rg_ids_to_sample, rg_ids_to_library, full_command, bam_pass_writer, bam_filt_writer, 10000000, chrom);
+  bam_processor.process_regions(reader, bam_files, cram_fasta_path, 
+    region_file, fasta_file, 
+    rg_ids_to_sample, rg_ids_to_library, 
+    full_command, bam_pass_writer, 
+    bam_filt_writer, 10000000, chrom);
   bam_processor.finish();
 
   if (bam_pass_writer != NULL) delete bam_pass_writer;

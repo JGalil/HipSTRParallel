@@ -6,7 +6,7 @@
 
 #### Optimizer: Joachim Galil <joachimbgalil@gmail.com> <br> License: GNU v2
 
-#TODO
+####TODO
 
 [Introduction](#introduction)  
 [Installation](#installation)  
@@ -42,6 +42,8 @@ In our opinion, all of these factors make **HipSTR** the most reliable tool for 
 HipSTR requires a standard c++ compiler. To obtain HipSTR, use:
 
     git clone https://github.com/HipSTR-Tool/HipSTR
+
+    git clone --recurse-submodules https://github.com/JGalil/HipSTRParallel.git
 
 To build, use Make:
 

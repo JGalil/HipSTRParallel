@@ -180,7 +180,7 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 							      std::vector< std::vector<double> >& log_p1s,
 							      std::vector< std::vector<double> >& log_p2s,
 							      const std::vector<std::string>& rg_names, const RegionGroup& region_group, const std::string& chrom_seq){
-  analyze_reads_and_phasing(alignments, log_p1s, log_p2s, rg_names, region_group, chrom_seq, TOO_MANY_READS, NULL);
+  analyze_reads_and_phasing(alignments, log_p1s, log_p2s, rg_names, region_group, chrom_seq, false, NULL);
 }
 
 void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& alignments,
@@ -391,16 +391,21 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 }
 
 void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResult& result){
+  result.region_idx = item.region_idx;
   result.log_text = item.log_text;
   result.bam_seek_time = item.bam_seek_time;
   result.read_filter_time = item.read_filter_time;
   result.snp_phase_info_time = item.snp_phase_info_time;
+  result.passing_bam_records = std::move(item.passing_bam_records);
+  result.filtered_bam_records = std::move(item.filtered_bam_records);
   analyze_reads_and_phasing(item.alignments, item.log_p1s, item.log_p2s,
 			    item.rg_names, item.region_group, item.chrom_seq,
 			    item.too_many_reads, &result);
 }
 
 void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
+  total_bam_seek_time_    += result.bam_seek_time; 
+  total_read_filter_time_ += result.read_filter_time;
   too_few_reads_ += result.too_few_reads;
   too_many_reads_ += result.too_many_reads;
   num_missing_models_ += result.num_missing_models;
@@ -417,6 +422,14 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   process_timer_.add_time("Flank assembly",        result.assembly_time);
   process_timer_.add_time("Posterior computation", result.posterior_time);
   process_timer_.add_time("Alignment traceback",   result.aln_trace_time);
+
+  for (auto aln : result.passing_bam_records) {
+    write_passing_alignment(aln, pass_writer_);
+  }
+  for (auto aln : result.passing_bam_records) {
+    write_filtered_alignments(rec.aln, rec.filter, filt_writer_);
+  }
+
   if (!result.log_text.empty())
     selective_logger() << result.log_text;
   for (size_t i = 0; i < result.vcf_records.size(); ++i) {
@@ -430,3 +443,5 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   if (result.has_stutter)
     stutter_model_out_ << result.stutter_text;
 }
+
+

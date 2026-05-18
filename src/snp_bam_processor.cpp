@@ -39,15 +39,27 @@ void SNPBamProcessor::process_reads(std::vector<BamAlnList>& paired_strs_by_rg,
   std::vector<BamAlnList> alignments;
   std::vector< std::vector<double> > log_p1s, log_p2s;
   prepare_read_phasing(paired_strs_by_rg, mate_pairs_by_rg, unpaired_strs_by_rg,
-		       rg_names, region_group, chrom_seq, alignments, log_p1s, log_p2s, selective_logger());
+		       rg_names, region_group, chrom_seq, alignments, log_p1s, log_p2s, selective_logger(), NULL);
   analyze_reads_and_phasing(alignments, log_p1s, log_p2s, rg_names, region_group, chrom_seq);
 }
 
 bool SNPBamProcessor::prepare_region_work_item(RegionWorkItem& item, std::ostream& logger){
-  bool prepared = prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
-				      item.rg_names, item.region_group, item.chrom_seq,
-				      item.alignments, item.log_p1s, item.log_p2s, logger);
-  item.snp_phase_info_time = locus_snp_phase_info_time_;
+  bool needs_serial_snp_state = phased_snp_vcf_ != NULL || haplotype_tracker_ != NULL;
+  bool prepared = false;
+  double phase_time = 0;
+  if(needs_serial_snp_state){
+    std::lock_guard<std::mutex> lock(snp_phase_mutex_);
+    prepared = prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
+                item.rg_names, item.region_group, item.chrom_seq,
+                item.alignments, item.log_p1s, item.log_p2s, logger, &phase_time);
+  }
+  else {
+    prepared = prepare_read_phasing(item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
+                item.rg_names, item.region_group, item.chrom_seq,
+                item.alignments, item.log_p1s, item.log_p2s, logger, &phase_time);
+  }
+  
+  item.snp_phase_info_time = phase_time;
   return prepared;
 }
 
@@ -60,7 +72,12 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 					   std::vector<BamAlnList>& alignments,
 					   std::vector< std::vector<double> >& log_p1s,
 					   std::vector< std::vector<double> >& log_p2s,
-					   std::ostream& logger){
+					   std::ostream& logger,
+             double* phase_time_out){
+
+  double phase_start = clock();
+  int32_t local_match_count = 0;
+  int32_t local_mismatch_count = 0;
   if (bams_from_10x_){
     locus_snp_phase_info_time_ = clock();
     assert(paired_strs_by_rg.size() == mate_pairs_by_rg.size() && paired_strs_by_rg.size() == unpaired_strs_by_rg.size());
@@ -107,6 +124,12 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
     logger << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads" << std::endl;
     locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
     total_snp_phase_info_time_ += locus_snp_phase_info_time_;
+
+    double elapsed = (clock() - phase_start) / CLOCKS_PER_SEC;
+    if (phase_time_out != NULL)
+      *phase_time_out = elapsed;
+    else
+      total_snp_phase_info_time_ += elapsed;
     return true;
   }
 
@@ -127,7 +150,7 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
     std::vector<SNPTree*> snp_trees;
     std::map<std::string, unsigned int> sample_indices;      
     if (create_snp_trees(region_group.chrom(), (region_group.start() > MAX_MATE_DIST ? region_group.start()-MAX_MATE_DIST : 1), region_group.stop()+MAX_MATE_DIST,
-			 skip_regions, SKIP_PADDING, phased_snp_vcf_, haplotype_tracker_, sample_indices, snp_trees, selective_logger())){
+			 skip_regions, SKIP_PADDING, phased_snp_vcf_, haplotype_tracker_, sample_indices, snp_trees, logger)){
       got_snp_info = true;
       std::set<std::string> bad_samples, good_samples;
       for (unsigned int i = 0; i < paired_strs_by_rg.size(); ++i){
@@ -135,8 +158,8 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 	  good_samples.insert(rg_names[i]);
 	  std::vector<double> log_p1, log_p2;
 	  SNPTree* snp_tree = snp_trees[sample_indices[rg_names[i]]];
-	  calc_het_snp_factors(paired_strs_by_rg[i], mate_pairs_by_rg[i], base_quality_, snp_tree, log_p1, log_p2, match_count_, mismatch_count_);
-	  calc_het_snp_factors(unpaired_strs_by_rg[i], base_quality_, snp_tree, log_p1, log_p2, match_count_, mismatch_count_);
+	  calc_het_snp_factors(paired_strs_by_rg[i], mate_pairs_by_rg[i], base_quality_, snp_tree, log_p1, log_p2, local_match_count, local_mismatch_count);
+	  calc_het_snp_factors(unpaired_strs_by_rg[i], base_quality_, snp_tree, log_p1, log_p2, local_match_count, local_mismatch_count);
 	  log_p1s.push_back(log_p1); log_p2s.push_back(log_p2);
 	}
 	else {
@@ -185,7 +208,16 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 		     << " and " << phased_samples << " out of " << rg_names.size() <<  " samples" << std::endl;
 
   locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
-  total_snp_phase_info_time_ += locus_snp_phase_info_time_;
+  // total_snp_phase_info_time_ += locus_snp_phase_info_time_;
+
+  double elapsed = (clock() - phase_start) / CLOCKS_PER_SEC;
+  if(phase_time_out != NULL) *phase_time_out = elapsed;
+
+  {
+    std::lock_guard<std::mutex> lock(snp_stats_mutex_);
+    match_count_ += local_match_count;
+    mismatch_count_ += local_mismatch_count;
+  }
 
   return true;
 }

@@ -12,6 +12,7 @@
 #include <taskflow/taskflow.hpp>
 #include <taskflow/algorithm/pipeline.hpp>
 #include <atomic>
+#include <mutex>
 
 #include "adapter_trimmer.h"
 #include "bam_io.h"
@@ -23,17 +24,34 @@
 #include "stringops.h"
 
 class BamProcessor {
+
+
  protected:
   typedef std::vector<BamAlignment> BamAlnList;
+  //timing
+  bool use_bam_rgs_;
+  double total_bam_seek_time_;
+  double total_read_filter_time_;
+
+  std::mutex bam_writer_mutex_;
+
+  BamWriter* pass_writer_;
+  BamWriter* filt_writer_;
+
+  struct FilteredBamRecord {
+  	BamAlignment aln;
+	std::string filter;
+  };
 
  private:
-  bool use_bam_rgs_;
+
 
   // Timing statistics (in seconds)
-  double total_bam_seek_time_;
+
   double locus_bam_seek_time_;
-  double total_read_filter_time_;
   double locus_read_filter_time_;
+
+
 
 
   void  write_passing_alignment(BamAlignment& aln, BamWriter* writer);
@@ -45,10 +63,11 @@ class BamProcessor {
   void get_valid_pairings(BamAlignment& aln_1, BamAlignment& aln_2,
 			  std::vector< std::pair<std::string, int32_t> >& p1, std::vector< std::pair<std::string, int32_t> >& p2) const;
 
-  void read_and_filter_reads(BamCramMultiReader& reader, const std::string& chrom_seq, const RegionGroup& region,
+  bool read_and_filter_reads(BamCramMultiReader& reader, AdapterTrimmer& adapter_trimmer, const std::string& chrom_seq, const RegionGroup& region,
 			     const std::map<std::string, std::string>& rg_to_sample, std::vector<std::string>& rg_names,
 			     std::vector<BamAlnList>& paired_strs_by_rg, std::vector<BamAlnList>& mate_pairs_by_rg, std::vector<BamAlnList>& unpaired_strs_by_rg,
-			     BamWriter* pass_writer, BamWriter* filt_writer, std::ostream& logger);
+			     std::vector<BamAlignment>& passing_bam_records, 
+				 std::vector<FilteredBamRecord>& filtered_bam_records, std::ostream& logger);
 
  std::string get_read_group(const BamAlignment& aln, const std::map<std::string, std::string>& read_group_mapping) const;
 
@@ -81,7 +100,7 @@ class BamProcessor {
 
  protected:
  // Counter for number of loci that were skipped b/c they exceeded the maximum length threshold
- int num_too_long_;
+ std::atomic<int> num_too_long_;
 
   public:
  BamProcessor(bool use_bam_rgs, bool remove_pcr_dups){
@@ -106,9 +125,12 @@ class BamProcessor {
    log_to_file_             = false;
     MAX_TOTAL_READS          = 1000000;
     BASE_QUAL_TRIM           = '5';
-    TOO_MANY_READS           = false;
+    //TOO_MANY_READS           = false;
     bams_from_10x_           = false;
     NUM_THREADS              = 1;
+	pass_writer_ = NULL;
+	filt_writer_ = NULL;
+
 	 }
 
  ~BamProcessor(){
@@ -126,9 +148,14 @@ class BamProcessor {
  void use_10x_bam_tags()         { bams_from_10x_ = true;          }
 
  void process_regions(BamCramMultiReader& reader,
+			  const std::vector<std::string>& bam_files,
+			  const std::string& cram_fasta_path,
 		      const std::string& region_file, const std::string& fasta_file,
-		      const std::map<std::string, std::string>& rg_to_sample, const std::map<std::string, std::string>& rg_to_library, const std::string& full_command,
-		      BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, const std::string& chrom);
+		      const std::map<std::string, std::string>& rg_to_sample, 
+			  const std::map<std::string, std::string>& rg_to_library, 
+			  const std::string& full_command,
+		      BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, 
+			  const std::string& chrom);
   
  virtual void process_reads(std::vector<BamAlnList>& paired_strs_by_rg,
 			    std::vector<BamAlnList>& mate_pairs_by_rg,
@@ -176,31 +203,37 @@ class BamProcessor {
  double  MIN_SUM_QUAL_LOG_PROB;
  int32_t MAX_TOTAL_READS;       // Skip loci where the number of STR reads passing all filters exceeds this limit
 	 char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
-	 bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+	 //bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
 	 int     NUM_THREADS;           // Number of Taskflow pipeline lines/worker threads
 
 	 /**
 	  * Pipeline code
   */
 
+
+
   //output of read/filter stage
   struct RegionWorkItem {
-    RegionGroup region_group;
-    std::string chrom_seq;
-    std::vector<std::string> rg_names;
+		size_t region_idx = 0;
+		RegionGroup region_group;
+		std::string chrom_seq;
+		std::vector<std::string> rg_names;
 	    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
 	    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
 	    std::vector<BamProcessor::BamAlnList> unpaired_strs_by_rg;
 	    std::vector<BamProcessor::BamAlnList> alignments;
 	    std::vector< std::vector<double> > log_p1s;
 	    std::vector< std::vector<double> > log_p2s;
-	    std::atomic<bool> too_many_reads;
+	    bool too_many_reads;
 	    std::string log_text;
 	    double bam_seek_time = 0;
 	    double read_filter_time = 0;
 	    double snp_phase_info_time = 0;
 
-	    RegionWorkItem(const RegionGroup& rg) : region_group(rg), too_many_reads(false) {}
+		std::vector<BamAlignment> passing_bam_records;
+		std::vector<FilteredBamRecord> filtered_bam_records;
+
+	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), too_many_reads(false) {}
 
 	  };
 
@@ -215,8 +248,9 @@ class BamProcessor {
 
 	  //output of genotype stage
 	  struct RegionResult {
+		size_t region_idx = 0;
 	    std::string chrom;
-	    int32_t pos;
+	    int32_t pos = -1; //??
 	    std::vector<VCFRecord> vcf_records;
 	    std::string log_text;
 	    std::string viz_text;
@@ -241,10 +275,26 @@ class BamProcessor {
 	    double assembly_time = 0;
 	    double posterior_time = 0;
 	    double aln_trace_time = 0;
+
+		std::vector<BamAlignment> passing_bam_records;
+		std::vector<FilteredBamRecord> filtered_bam_records;
+	  };
+
+	  struct PipelineLineContext {
+		std::unique_ptr<BamCramMultiReader> reader;
+		std::unique_ptr<FastaReader> fasta_reader;
+		std::unique_ptr<AdapterTrimmer> adapter_trimmer;
+		std::string cur_chrom;
+		std::string chrom_seq;
+		std::unique_ptr<RegionWorkItem> work_item;
+		std::unique_ptr<RegionResult> result;
+
+		
 	  };
 
 	  bool make_region_work_item(
 	    BamCramMultiReader& reader,
+		AdapterTrimmer& adapter_trimmer,
 	    const std::map<std::string, std::string>& rg_to_sample,
 	    const std::map<std::string, std::string>& rg_to_library,
 	    const Region& region,
@@ -263,5 +313,6 @@ class BamProcessor {
 	  virtual void write_region_result(
 	    const RegionResult& result) = 0;
 };
+
 
 #endif

@@ -19,6 +19,9 @@ const double OTHER_HAP_LL       = -1000.0; // Log-likelihood read comes from a h
 
 class SNPBamProcessor : public BamProcessor {
 private:
+  std::mutex snp_stats_mutex_;
+  std::mutex snp_phase_mutex_;
+
   VCF::VCFReader* phased_snp_vcf_;
   int32_t match_count_, mismatch_count_;
 
@@ -59,7 +62,8 @@ protected:
 				  std::vector<BamAlnList>& alignments,
 				  std::vector< std::vector<double> >& log_p1s,
 				  std::vector< std::vector<double> >& log_p2s,
-				  std::ostream& logger);
+				  std::ostream& logger,
+          double* phase_time_out);
 
 	bool prepare_region_work_item(RegionWorkItem& item, std::ostream& logger);
 
