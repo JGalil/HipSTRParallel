@@ -1,9 +1,16 @@
 #include <assert.h>
+#include <chrono>
 #include <time.h>
 
 #include "snp_bam_processor.h"
 #include "snp_phasing_quality.h"
 #include "snp_tree.h"
+
+static double elapsed_seconds(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - start
+  ).count();
+}
 
 void SNPBamProcessor::verify_vcf_chromosomes(const std::vector<std::string>& chroms){
   if (phased_snp_vcf_ == NULL)
@@ -75,11 +82,10 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
 					   std::ostream& logger,
              double* phase_time_out){
 
-  double phase_start = clock();
+  auto phase_start = std::chrono::steady_clock::now();
   int32_t local_match_count = 0;
   int32_t local_mismatch_count = 0;
   if (bams_from_10x_){
-    locus_snp_phase_info_time_ = clock();
     assert(paired_strs_by_rg.size() == mate_pairs_by_rg.size() && paired_strs_by_rg.size() == unpaired_strs_by_rg.size());
 
     alignments.assign(paired_strs_by_rg.size(), BamAlnList());
@@ -122,10 +128,8 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
     }
 
     logger << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads" << std::endl;
-    locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
-    total_snp_phase_info_time_ += locus_snp_phase_info_time_;
-
-    double elapsed = (clock() - phase_start) / CLOCKS_PER_SEC;
+    double elapsed = elapsed_seconds(phase_start);
+    locus_snp_phase_info_time_ = elapsed;
     if (phase_time_out != NULL)
       *phase_time_out = elapsed;
     else
@@ -133,7 +137,6 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
     return true;
   }
 
-  locus_snp_phase_info_time_ = clock();
   assert(paired_strs_by_rg.size() == mate_pairs_by_rg.size() && paired_strs_by_rg.size() == unpaired_strs_by_rg.size());
   
   alignments.assign(paired_strs_by_rg.size(), BamAlnList());
@@ -207,11 +210,12 @@ bool SNPBamProcessor::prepare_read_phasing(std::vector<BamAlnList>& paired_strs_
   logger << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads"
 		     << " and " << phased_samples << " out of " << rg_names.size() <<  " samples" << std::endl;
 
-  locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
-  // total_snp_phase_info_time_ += locus_snp_phase_info_time_;
-
-  double elapsed = (clock() - phase_start) / CLOCKS_PER_SEC;
-  if(phase_time_out != NULL) *phase_time_out = elapsed;
+  double elapsed = elapsed_seconds(phase_start);
+  locus_snp_phase_info_time_ = elapsed;
+  if(phase_time_out != NULL)
+    *phase_time_out = elapsed;
+  else
+    total_snp_phase_info_time_ += elapsed;
 
   {
     std::lock_guard<std::mutex> lock(snp_stats_mutex_);
@@ -242,7 +246,7 @@ void SNPBamProcessor::process_10x_reads(std::vector<BamAlnList>& paired_strs_by_
 					std::vector<BamAlnList>& unpaired_strs_by_rg,
 					const std::vector<std::string>& rg_names, const RegionGroup& region_group,
 					const std::string& chrom_seq){
-  locus_snp_phase_info_time_ = clock();
+  auto phase_start = std::chrono::steady_clock::now();
   assert(paired_strs_by_rg.size() == mate_pairs_by_rg.size() && paired_strs_by_rg.size() == unpaired_strs_by_rg.size());
 
   std::vector<BamAlnList> alignments(paired_strs_by_rg.size());
@@ -295,7 +299,7 @@ void SNPBamProcessor::process_10x_reads(std::vector<BamAlnList>& paired_strs_by_
   }
 
   selective_logger() << "Phased SNPs add info for " << phased_reads << " out of " << total_reads << " reads" << std::endl;
-  locus_snp_phase_info_time_  = (clock() - locus_snp_phase_info_time_)/CLOCKS_PER_SEC;
+  locus_snp_phase_info_time_ = elapsed_seconds(phase_start);
   total_snp_phase_info_time_ += locus_snp_phase_info_time_;
 
   // Run any additional analyses using phasing probabilities

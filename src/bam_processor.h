@@ -52,10 +52,11 @@ class BamProcessor {
   double locus_read_filter_time_;
 
 
-
-
+ protected:
   void  write_passing_alignment(BamAlignment& aln, BamWriter* writer);
   void write_filtered_alignment(BamAlignment& aln, std::string filter, BamWriter* writer);
+
+ private:
 
   void extract_mappings(BamAlignment& aln,
 			std::vector< std::pair<std::string, int32_t> >& chrom_pos_pairs) const;

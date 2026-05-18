@@ -21,7 +21,7 @@ const std::string SUBOPT_ALN_SCORE_TAG  = "XS";
 
 //timing helper function
 
-static double elapsed_second(std::chrono::steady_clock::time_point start) {
+static double elapsed_seconds(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(
     std::chrono::steady_clock::now() - start
   ).count();
@@ -494,7 +494,6 @@ bool BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, AdapterTrim
       }
     }
     else
-      write_filtered_alignment(aln_iter->second, filter, filt_writer);
       if (filt_writer_ != NULL){
         filtered_bam_records.push_back({aln_iter->second, filter});
       }
@@ -608,14 +607,14 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 RegionWorkItem& item) {
   item.chrom_seq = chrom_seq;
 
-  auto seek_start = stdL::chrono::steady_clock::now();
+  auto seek_start = std::chrono::steady_clock::now();
   if (!reader.SetRegion(region.chrom(), (region.start() < MAX_MATE_DIST ? 0 : region.start()-MAX_MATE_DIST),
 			region.stop() + MAX_MATE_DIST))
     printErrorAndDie("One or more BAM files failed to set the region properly");
 
   item.bam_seek_time = elapsed_seconds(seek_start);
 
-  double filter_start = std::chrono::steady_clock::now();
+  auto filter_start = std::chrono::steady_clock::now();
   item.too_many_reads = read_and_filter_reads(reader, adapter_trimmer, chrom_seq, item.region_group, rg_to_sample, item.rg_names,
 			item.paired_strs_by_rg, item.mate_pairs_by_rg, item.unpaired_strs_by_rg,
 			item.passing_bam_records, item.filtered_bam_records, logger);
@@ -799,13 +798,13 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
         //per-line Fasta, no sharing betw lines
         //double check how contexts is working here
         //region chrom is not current
-        if (region.chrom().compare(*ctx.cur_chrom) != 0){
-          *ctx.cur_chrom = region.chrom();
-          *ctx.fasta_reader->get_sequence(*ctx.cur_chrom, *ctx.chroms_seq);
-          assert(*ctx.chroms_seq.size() != 0);
+        if (region.chrom().compare(ctx.cur_chrom) != 0){
+          ctx.cur_chrom = region.chrom();
+          ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
+          assert(ctx.chrom_seq.size() != 0);
         }
         //region within 50bp of end of contig
-        if (region.start() < 50 || region.stop()+50 >= *ctx.chroms_seq.size()){
+        if (region.start() < 50 || region.stop()+50 >= ctx.chrom_seq.size()){
           line_log << "Skipping region within 50bp of the end of the contig\n";
           auto result = std::make_unique<RegionResult>();
           result->region_idx = my_idx;
@@ -818,8 +817,8 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
         item->region_idx = my_idx;
 
         //use this line's own reader, no sharing
-        bool ok = make_region_work_item(*ctx.reader, **ctx.adapter_trimmer, rg_to_sample, rg_to_library, 
-                region, *ctx.chroms_seq,
+        bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer, rg_to_sample, rg_to_library, 
+                region, ctx.chrom_seq,
                 pass_writer, filt_writer, line_log, *item) &&
                 prepare_region_work_item(*item, line_log);
         if (ok) {
@@ -895,7 +894,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   std::ofstream ofs("hipstr_parallel_profile.tfp", std::ios::binary);
   observer->dump(ofs);
 
-  item->log_text = "HipSTRParallel total wall time: "
+  full_logger() << "HipSTRParallel total wall time: "
                 << std::chrono::duration<double>(wall_end - wall_start).count()
                 << " s\n";
 }

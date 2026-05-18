@@ -1,4 +1,5 @@
 #include <iomanip>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -9,6 +10,12 @@
 
 #include "extract_indels.h"
 #include "genotyper_bam_processor.h"
+
+static double elapsed_seconds(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - start
+  ).count();
+}
 
 int parseLine(char* line){
   int i = strlen(line);
@@ -42,7 +49,7 @@ double GenotyperBamProcessor::left_align_reads(const RegionGroup& region_group, 
 						     std::vector< std::vector<double> >& filt_log_p1,  std::vector< std::vector<double> >& filt_log_p2,
 						     std::vector<Alignment>& left_alns,
 						     std::ostream& logger){
-  double left_aln_time = clock();
+  auto left_aln_start = std::chrono::steady_clock::now();
   logger << "Left aligning reads" << std::endl;
   std::map<std::string, int> seq_to_alns;
   int32_t align_fail_count = 0, total_reads = 0;
@@ -97,7 +104,7 @@ double GenotyperBamProcessor::left_align_reads(const RegionGroup& region_group, 
     }
   }
 
-  left_aln_time  = (clock() - left_aln_time)/CLOCKS_PER_SEC;
+  double left_aln_time = elapsed_seconds(left_aln_start);
   if (align_fail_count != 0)
     logger << "Failed to left align " << align_fail_count << " out of " << total_reads << " reads" << std::endl;
   return left_aln_time;
@@ -227,7 +234,7 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
 
   // Learn the stutter model for each region
   std::vector<StutterModel*> stutter_models;
-  double locus_stutter_time = clock();
+  auto locus_stutter_start = std::chrono::steady_clock::now();
   bool stutter_success = true;
   for (auto region_iter = regions.begin(); region_iter != regions.end(); region_iter++){
     StutterModel* stutter_model = NULL;
@@ -254,12 +261,12 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
     stutter_models.push_back(stutter_model);
     stutter_success &= (stutter_model != NULL);
   }
-  locus_stutter_time  = (clock() - locus_stutter_time)/CLOCKS_PER_SEC;
+  double locus_stutter_time = elapsed_seconds(locus_stutter_start);
   if (result != NULL) result->stutter_time += locus_stutter_time;
   else total_stutter_time_ += locus_stutter_time;
 
   // Genotype the regions, if requested
-  double locus_genotype_time = clock();
+  auto locus_genotype_start = std::chrono::steady_clock::now();
   double locus_left_aln_time = 0;
   std::unique_ptr<VCF::VCFReader> local_ref_vcf;
   SeqStutterGenotyper* seq_genotyper = NULL;
@@ -327,7 +334,7 @@ void GenotyperBamProcessor::analyze_reads_and_phasing(std::vector<BamAlnList>& a
       else num_genotype_fail_++;
     }
   }
-  locus_genotype_time  = (clock() - locus_genotype_time)/CLOCKS_PER_SEC;
+  double locus_genotype_time = elapsed_seconds(locus_genotype_start);
   if (result != NULL) {
     result->left_aln_time += locus_left_aln_time;
     result->genotype_time += locus_genotype_time;
@@ -426,8 +433,8 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   for (auto aln : result.passing_bam_records) {
     write_passing_alignment(aln, pass_writer_);
   }
-  for (auto aln : result.passing_bam_records) {
-    write_filtered_alignments(rec.aln, rec.filter, filt_writer_);
+  for (auto rec : result.filtered_bam_records) {
+    write_filtered_alignment(rec.aln, rec.filter, filt_writer_);
   }
 
   if (!result.log_text.empty())
@@ -443,5 +450,3 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   if (result.has_stutter)
     stutter_model_out_ << result.stutter_text;
 }
-
-
