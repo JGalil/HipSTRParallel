@@ -706,7 +706,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
 
   
   //one executor with pipeline_lines worker threads
-  size_t pipeline_lines = std::max<size_t>(1, NUM_THREADS);
+  size_t pipeline_lines = std::max<size_t>(1, 2*NUM_THREADS);
   tf::Executor executor(pipeline_lines);
   tf::Taskflow taskflow;
   std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
