@@ -725,7 +725,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   tf::Pipeline pipeline(
     pipeline_lines,
     // STAGE 0: Taskflow requires the first pipe to be serial. Keep this pipe
-    // tiny; it only creates a token for the next region.
+    // tiny it only creates a token for the next region.
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
       work_items[pf.line()].reset();
       results[pf.line()].reset();
