@@ -126,6 +126,7 @@ class BamProcessor {
    log_to_file_             = false;
     MAX_TOTAL_READS          = 1000000;
     BASE_QUAL_TRIM           = '5';
+    //TOO_MANY_READS           = false;
     bams_from_10x_           = false;
     NUM_THREADS              = 1;
 	pass_writer_ = NULL;
@@ -198,16 +199,19 @@ class BamProcessor {
 
  int     REMOVE_PCR_DUPS;
  int     REQUIRE_SPANNING;
- int     REQUIRE_PAIRED_READS;
+ int     REQUIRE_PAIRED_READS;  // Only utilize paired STR reads to genotype individuals
 
  double  MIN_SUM_QUAL_LOG_PROB;
- int32_t MAX_TOTAL_READS;
-	 char    BASE_QUAL_TRIM;
-	 int     NUM_THREADS;
+ int32_t MAX_TOTAL_READS;       // Skip loci where the number of STR reads passing all filters exceeds this limit
+	 char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
+	 //bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+	 int     NUM_THREADS;           // Number of Taskflow pipeline lines/worker threads
 
 	 /**
 	  * Pipeline code
   */
+
+
 
   //output of read/filter stage
   struct RegionWorkItem {
@@ -247,7 +251,7 @@ class BamProcessor {
 	  struct RegionResult {
 		size_t region_idx = 0;
 	    std::string chrom;
-	    int32_t pos = -1;
+	    int32_t pos = -1; //??
 	    std::vector<VCFRecord> vcf_records;
 	    std::string log_text;
 	    std::string viz_text;
@@ -285,11 +289,10 @@ class BamProcessor {
 		std::string chrom_seq;
 		std::unique_ptr<RegionWorkItem> work_item;
 		std::unique_ptr<RegionResult> result;
+
+		
 	  };
 
-	  // pass_writer and filt_writer removed: BAM writes are now deferred to
-	  // Stage 2 (serial) via item.passing_bam_records / item.filtered_bam_records,
-	  // eliminating bam_writer_mutex_ contention across parallel Stage 1 lines.
 	  bool make_region_work_item(
 	    BamCramMultiReader& reader,
 		AdapterTrimmer& adapter_trimmer,
@@ -297,6 +300,8 @@ class BamProcessor {
 	    const std::map<std::string, std::string>& rg_to_library,
 	    const Region& region,
 	    const std::string& chrom_seq,
+	    BamWriter* pass_writer,
+	    BamWriter* filt_writer,
 	    std::ostream& logger,
 	    RegionWorkItem& item);
 
