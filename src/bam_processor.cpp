@@ -844,12 +844,12 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
         if (filt_writer_ != NULL && !item->filtered_bam_records.empty()) {
           std::lock_guard<std::mutex> lock(bam_writer_mutex_);
           for (auto& rec : item->filtered_bam_records) {
-            if (rec.alignment.HasTag("FT"))
-              if (!rec.alignment.RemoveTag("FT"))
+            if (rec.aln.HasTag("FT"))
+              if (!rec.aln.RemoveTag("FT"))
                 printErrorAndDie("Failed to remove alignment's FT tag");
-            if (!rec.alignment.AddStringTag("FT", rec.filter))
+            if (!rec.aln.AddStringTag("FT", rec.filter))
               printErrorAndDie("Failed to add filter tag to alignment");
-            if (!filt_writer_->SaveAlignment(rec.alignment))
+            if (!filt_writer_->SaveAlignment(rec.aln))
               printErrorAndDie("Failed to save filtered alignment");
           }
         }
