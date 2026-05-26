@@ -217,7 +217,7 @@ class BamProcessor {
   struct RegionWorkItem {
 		size_t region_idx = 0;
 		RegionGroup region_group;
-		const std::string* chrom_seq;
+		std::string chrom_seq;
 		std::vector<std::string> rg_names;
 	    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
 	    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
@@ -234,7 +234,7 @@ class BamProcessor {
 		std::vector<BamAlignment> passing_bam_records;
 		std::vector<FilteredBamRecord> filtered_bam_records;
 
-	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), chrom_seq(NULL), too_many_reads(false) {}
+	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), too_many_reads(false) {}
 
 	  };
 
