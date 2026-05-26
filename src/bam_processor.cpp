@@ -819,8 +819,18 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
         + " read_filter=" + std::to_string(item.read_filter_time * 1000.0) + "ms"
         + " process="     + std::to_string(process_ms)                     + "ms\n";
 
-      // Keep work_item alive into Stage 2 so it can flush its BAM buffers.
-      // Stage 2 resets work_items[line] after writing.
+      // OPTION A: Heavy string/tag manipulation done in parallel
+      if (filt_writer_ != NULL && !item.filtered_bam_records.empty()) {
+        for (auto& rec : item.filtered_bam_records) {
+          if (rec.aln.HasTag("FT")) {
+            if (!rec.aln.RemoveTag("FT"))
+              printErrorAndDie("Failed to remove alignment's FT tag");
+          }
+          if (!rec.aln.AddStringTag("FT", rec.filter))
+            printErrorAndDie("Failed to add filter tag to alignment");
+        }
+      }
+
       results[pf.line()] = std::move(result);
     }},
     // STAGE 2: ordered result collection, VCF output, and deferred BAM writes.
@@ -832,23 +842,20 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
       if (!results[pf.line()])
         return;
 
-      // Flush buffered BAM alignments — one lock acquisition per region.
       auto& item = work_items[pf.line()];
       if (item) {
+        // Coarse lock: acquire once per region batch rather than per read
+        std::lock_guard<std::mutex> lock(bam_writer_mutex_);
+
         if (pass_writer_ != NULL && !item->passing_bam_records.empty()) {
-          std::lock_guard<std::mutex> lock(bam_writer_mutex_);
-          for (auto& aln : item->passing_bam_records)
+          for (auto& aln : item->passing_bam_records) {
             if (!pass_writer_->SaveAlignment(aln))
               printErrorAndDie("Failed to save passing alignment");
+          }
         }
+        
         if (filt_writer_ != NULL && !item->filtered_bam_records.empty()) {
-          std::lock_guard<std::mutex> lock(bam_writer_mutex_);
           for (auto& rec : item->filtered_bam_records) {
-            if (rec.aln.HasTag("FT"))
-              if (!rec.aln.RemoveTag("FT"))
-                printErrorAndDie("Failed to remove alignment's FT tag");
-            if (!rec.aln.AddStringTag("FT", rec.filter))
-              printErrorAndDie("Failed to add filter tag to alignment");
             if (!filt_writer_->SaveAlignment(rec.aln))
               printErrorAndDie("Failed to save filtered alignment");
           }
