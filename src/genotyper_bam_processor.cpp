@@ -407,7 +407,7 @@ void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResu
   result.passing_bam_records = std::move(item.passing_bam_records);
   result.filtered_bam_records = std::move(item.filtered_bam_records);
   analyze_reads_and_phasing(item.alignments, item.log_p1s, item.log_p2s,
-			    item.rg_names, item.region_group, item.chrom_seq,
+			    item.rg_names, item.region_group, *item.chrom_seq,
 			    item.too_many_reads, &result);
 }
 
