@@ -265,6 +265,7 @@ bool BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, AdapterTrim
 
       // Apply adapter trimming
       adapter_trimmer.trim_adapters(alignment);
+      logger << adapter_trimmer.get_trimming_stats_msg() << "\n";
 
       if (alignment.CigarData().size() == 0 || alignment.Length() == 0)
 	continue;
@@ -601,10 +602,10 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 const Region& region,
 					 const std::string& chrom_seq,
 					 BamWriter* pass_writer,
-						 BamWriter* filt_writer,
-						 std::ostream& logger,
-						 RegionWorkItem& item) {
-  item.chrom_seq = &chrom_seq;
+					 BamWriter* filt_writer,
+					 std::ostream& logger,
+					 RegionWorkItem& item) {
+  item.chrom_seq = chrom_seq;
 
   auto seek_start = std::chrono::steady_clock::now();
   if (!reader.SetRegion(region.chrom(), (region.start() < MAX_MATE_DIST ? 0 : region.start()-MAX_MATE_DIST),
@@ -689,28 +690,27 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   init_output_vcf(fasta_file, chroms, full_command);
 
   //region ordering
-  std::vector<std::unique_ptr<RegionResult>> pending_results(regions.size());
+  std::map<size_t, std::unique_ptr<RegionResult>> pending_results;
   size_t next_result_to_write = 0;
 
   auto flush_ready_results = [&]() {
-    while (next_result_to_write < regions.size() &&
-           pending_results[next_result_to_write]){
-        write_region_result(*pending_results[next_result_to_write]);
-        pending_results[next_result_to_write].reset();
-        next_result_to_write++;
+    while(true) {
+      auto iter = pending_results.find(next_result_to_write);
+      if(iter == pending_results.end()) break;
+
+      write_region_result(*iter->second);
+      pending_results.erase(iter);
+      ++next_result_to_write;
     }
   };
 
   
-  // Use 2x the requested threads as in-flight pipeline lines, but keep the
-  // actual worker pool at --threads to avoid oversubscribing CPU resources.
+  //one executor with pipeline_lines worker threads
   size_t pipeline_lines = std::max<size_t>(1, 2*NUM_THREADS);
-  size_t executor_workers = std::max<size_t>(1, NUM_THREADS);
-  tf::Executor executor(executor_workers);
+  tf::Executor executor(pipeline_lines);
   tf::Taskflow taskflow;
-  //std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
+  std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
   std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
-  std::vector<size_t> region_indices(pipeline_lines, 0);
 
   int merge_type = BamCramMultiReader::ORDER_ALNS_BY_FILE;
   size_t next_region = 0;
@@ -725,89 +725,102 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   tf::Pipeline pipeline(
     pipeline_lines,
     // STAGE 0: Taskflow requires the first pipe to be serial. Keep this pipe
-    // tiny it only creates a token for the next region.
+    // tiny; it only creates a token for the next region.
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
+      work_items[pf.line()].reset();
+      results[pf.line()].reset();
+      contexts[pf.line()].work_item.reset();
+      contexts[pf.line()].result.reset();
+
       if (next_region >= regions.size()){
         pf.stop();
         return;
       }
-      region_indices[pf.line()] = next_region++;
+
+      size_t my_idx = next_region++;
+      work_items[pf.line()] = std::make_unique<RegionWorkItem>(my_idx, RegionGroup(regions[my_idx]));
     }},
     // STAGE 1: All real per-region work happens here in parallel.
     tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
-      //work_items[pf.line()].reset(); not used
+      if (!work_items[pf.line()])
+        return;
       results[pf.line()].reset();
       auto& ctx = contexts[pf.line()];
       ctx.work_item.reset();
       ctx.result.reset();
 
-      size_t my_idx = region_indices[pf.line()];
-      const Region& region = regions[my_idx];
-
+      auto& item = *work_items[pf.line()];
+      const Region& region = item.region_group.regions()[0];
       std::ostringstream line_log;
-      line_log << "Processing region " << region.chrom()
-              << " " << region.start()
-              << " " << region.stop() << "\n";
+      line_log << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << "\n";
 
-      auto result = std::make_unique<RegionResult>();
-      result->region_idx = my_idx;
+      std::unique_ptr<RegionResult> result(new RegionResult());
+      result->region_idx = item.region_idx;
 
-      // Skip checks before any RegionWorkItem allocation
       if (region.stop() - region.start() > MAX_STR_LENGTH){
-          num_too_long_++;
-          result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +
-            std::to_string(region.stop() - region.start()) +
-            " vs " + std::to_string(MAX_STR_LENGTH) + ")\n"
-            "You can increase this threshold using the --max-str-len option\n";
-          results[pf.line()] = std::move(result);
-          return;  // no work_item needed, no allocation
+        num_too_long_++;
+        result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +
+          std::to_string(region.stop() - region.start()) +
+          " vs " + std::to_string(MAX_STR_LENGTH) + ")\n"
+          "You can increase this threshold using the --max-str-len option\n";
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
       if (region.chrom().compare(ctx.cur_chrom) != 0){
-          ctx.cur_chrom = region.chrom();
-          ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
-          assert(ctx.chrom_seq.size() != 0);
+        ctx.cur_chrom = region.chrom();
+        ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
+        assert(ctx.chrom_seq.size() != 0);
       }
 
       if (region.start() < 50 || region.stop()+50 >= ctx.chrom_seq.size()){
-          result->log_text = line_log.str() + "Skipping region within 50bp of the end of the contig\n";
-          results[pf.line()] = std::move(result);
-          return;  // no work_item needed, no allocation
+        line_log << "Skipping region within 50bp of the end of the contig\n";
+        result->log_text = line_log.str();
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
-      // Only allocate RegionWorkItem if we're actually going to process it
-      auto item = std::make_unique<RegionWorkItem>(my_idx, RegionGroup(region));
-
-      bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer,
-                  rg_to_sample, rg_to_library,
-                  region, ctx.chrom_seq,
-                  pass_writer, filt_writer, line_log, *item) &&
-                prepare_region_work_item(*item, line_log);
-
-      if (!ok){
-          result->log_text = line_log.str();
-          results[pf.line()] = std::move(result);
-          return;
+      bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer, rg_to_sample, rg_to_library, 
+              region, ctx.chrom_seq,
+              pass_writer, filt_writer, line_log, item) &&
+              prepare_region_work_item(item, line_log);
+      if (!ok) {
+        result->log_text = line_log.str();
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
-      item->log_text = line_log.str();
+      item.log_text = line_log.str();
+
 
       auto t0 = std::chrono::high_resolution_clock::now();
-      process_region_item(*item, *result);
-      result->region_idx = item->region_idx;
+      process_region_item(item, *result);
+      result->region_idx = item.region_idx;
+      work_items[pf.line()].reset();
       auto t1 = std::chrono::high_resolution_clock::now();
       double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-      result->log_text += "[line " + std::to_string(pf.line()) +
-                          "] process_region_item: " + std::to_string(ms) + " ms\n";
+      result->log_text += "[line " + std::to_string(pf.line()) + "] process_region_item: " + std::to_string(ms) + " ms\n";
 
       results[pf.line()] = std::move(result);
     }},
     // STAGE 2
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
-      if (!results[pf.line()]) return;
+
+      auto& ctx = contexts[pf.line()];
+      ctx.work_item.reset();
+      ctx.result.reset();
+      if (!results[pf.line()])
+        return;
+
       size_t idx = results[pf.line()]->region_idx;
       pending_results[idx] = std::move(results[pf.line()]);
       flush_ready_results();
+      
+      
+
     }}
   );
 

@@ -1,598 +1,319 @@
-#ifndef BAM_IO_H_
-#define BAM_IO_H_
+#ifndef BAM_PROCESSOR_H_
+#define BAM_PROCESSOR_H_
 
-#include <algorithm>
+#include <fstream>
 #include <iostream>
-#include <inttypes.h>
-#include <stdbool.h>
-#include <assert.h>
+#include <memory>
 #include <map>
+#include <set>
 #include <sstream>
+#include <string>
 #include <vector>
-#include <sys/stat.h>
+#include <taskflow/taskflow.hpp>
+#include <taskflow/algorithm/pipeline.hpp>
+#include <atomic>
+#include <mutex>
 
-#include "htslib/bgzf.h"
-#include "htslib/cram/cram.h"
-#include "htslib/sam.h"
-
+#include "adapter_trimmer.h"
+#include "bam_io.h"
+#include "base_quality.h"
 #include "error.h"
+#include "fasta_reader.h"
+#include "null_ostream.h"
+#include "region.h"
+#include "stringops.h"
 
-// htslib encodes each base using a 4 bit integer
-// This array converts each integer to its corresponding base
-static const char HTSLIB_INT_TO_BASE[16] = {' ', 'A', 'C', ' ',
-					    'G', ' ', ' ', ' ', 
-					    'T', ' ', ' ', ' ', 
-					    ' ', ' ', ' ', 'N'};
+class BamProcessor {
 
-class CigarOp {
-public:
-  char Type;
-  int32_t Length;
+
+ protected:
+  typedef std::vector<BamAlignment> BamAlnList;
+  //timing
+  bool use_bam_rgs_;
+  double total_bam_seek_time_;
+  double total_read_filter_time_;
+
+  std::mutex bam_writer_mutex_;
+
+  BamWriter* pass_writer_;
+  BamWriter* filt_writer_;
+
+  struct FilteredBamRecord {
+  	BamAlignment aln;
+	std::string filter;
+  };
+
+ private:
+
+
+  // Timing statistics (in seconds)
+
+  double locus_bam_seek_time_;
+  double locus_read_filter_time_;
+
+
+ protected:
+  void  write_passing_alignment(BamAlignment& aln, BamWriter* writer);
+  void write_filtered_alignment(BamAlignment& aln, std::string filter, BamWriter* writer);
+
+ private:
+
+  void extract_mappings(BamAlignment& aln,
+			std::vector< std::pair<std::string, int32_t> >& chrom_pos_pairs) const;
+
+  void get_valid_pairings(BamAlignment& aln_1, BamAlignment& aln_2,
+			  std::vector< std::pair<std::string, int32_t> >& p1, std::vector< std::pair<std::string, int32_t> >& p2) const;
+
+  bool read_and_filter_reads(BamCramMultiReader& reader, AdapterTrimmer& adapter_trimmer, const std::string& chrom_seq, const RegionGroup& region,
+			     const std::map<std::string, std::string>& rg_to_sample, std::vector<std::string>& rg_names,
+			     std::vector<BamAlnList>& paired_strs_by_rg, std::vector<BamAlnList>& mate_pairs_by_rg, std::vector<BamAlnList>& unpaired_strs_by_rg,
+			     std::vector<BamAlignment>& passing_bam_records, 
+				 std::vector<FilteredBamRecord>& filtered_bam_records, std::ostream& logger);
+
+ std::string get_read_group(const BamAlignment& aln, const std::map<std::string, std::string>& read_group_mapping) const;
+
+ std::string trim_alignment_name(const BamAlignment& aln) const;
+
+ bool spans_a_region(const std::vector<Region>& regions, BamAlignment& alignment) const;
+
+  void verify_chromosomes(const std::vector<std::string>& chroms, const BamHeader* bam_header, FastaReader& fasta_reader);
+
+  virtual void verify_vcf_chromosomes(const std::vector<std::string>& chroms) = 0;
+
+  virtual void init_output_vcf(const std::string& fasta_path, const std::vector<std::string>& chroms, const std::string& full_command) = 0;
+
+ protected:
+ AdapterTrimmer adapter_trimmer_;
+ BaseQuality base_quality_;
+
+ bool bams_from_10x_; // True iff BAMs were generated from 10X GEMCODE platform
+
+ bool quiet_, silent_;
+ bool log_to_file_;
+ NullOstream null_log_;
+ std::ofstream log_;
+
+ std::set<std::string> sample_set_;
+
+ // Private unimplemented copy constructor and assignment operator to prevent operations
+ BamProcessor(const BamProcessor& other);
+ BamProcessor& operator=(const BamProcessor& other);
+
+ protected:
+ // Counter for number of loci that were skipped b/c they exceeded the maximum length threshold
+ std::atomic<int> num_too_long_;
+
+  public:
+ BamProcessor(bool use_bam_rgs, bool remove_pcr_dups){
+   num_too_long_            = 0;
+   use_bam_rgs_             = use_bam_rgs;
+   REMOVE_PCR_DUPS          = (remove_pcr_dups ? 1 : 0);
+   MAX_MATE_DIST            = 1000;
+   MIN_BP_BEFORE_INDEL      = 7;
+   MIN_FLANK                = 5;
+   MIN_READ_END_MATCH       = 10;
+   MAXIMAL_END_MATCH_WINDOW = 15;
+   REQUIRE_SPANNING         = 0;
+   REQUIRE_PAIRED_READS     = 1;
+   total_bam_seek_time_     = 0;
+   locus_bam_seek_time_     = -1;
+   total_read_filter_time_  = 0;
+   locus_read_filter_time_  = -1;
+   MAX_STR_LENGTH           = 100;
+   MIN_SUM_QUAL_LOG_PROB    = -10;
+   quiet_                   = false;
+   silent_                  = false;
+   log_to_file_             = false;
+    MAX_TOTAL_READS          = 1000000;
+    BASE_QUAL_TRIM           = '5';
+    //TOO_MANY_READS           = false;
+    bams_from_10x_           = false;
+    NUM_THREADS              = 1;
+	pass_writer_ = NULL;
+	filt_writer_ = NULL;
+
+	 }
+
+ ~BamProcessor(){
+   if (log_to_file_)
+     log_.close();
+ }
+
+ double total_bam_seek_time()    { return total_bam_seek_time_;    }
+ double locus_bam_seek_time()    { return locus_bam_seek_time_;    }
+ double total_read_filter_time() { return total_read_filter_time_; }
+ double locus_read_filter_time() { return locus_read_filter_time_; }
+ void use_custom_read_groups()   { use_bam_rgs_ = false;           }
+ void suppress_most_logging()    { quiet_ = true; silent_ = false; }
+ void suppress_all_logging()     { silent_ = true; quiet_ = false; }
+ void use_10x_bam_tags()         { bams_from_10x_ = true;          }
+
+ void process_regions(BamCramMultiReader& reader,
+			  const std::vector<std::string>& bam_files,
+			  const std::string& cram_fasta_path,
+		      const std::string& region_file, const std::string& fasta_file,
+		      const std::map<std::string, std::string>& rg_to_sample, 
+			  const std::map<std::string, std::string>& rg_to_library, 
+			  const std::string& full_command,
+		      BamWriter* pass_writer, BamWriter* filt_writer, int32_t max_regions, 
+			  const std::string& chrom);
   
-  CigarOp(char type, int32_t length){
-    Type   = type;
-    Length = length;
-  }
-};
+ virtual void process_reads(std::vector<BamAlnList>& paired_strs_by_rg,
+			    std::vector<BamAlnList>& mate_pairs_by_rg,
+			    std::vector<BamAlnList>& unpaired_strs_by_rg,
+			    const std::vector<std::string>& rg_names, const RegionGroup& region_group, const std::string& chrom_seq) = 0;
 
+ void set_log(const std::string& log_file){
+   if (log_to_file_)
+     printErrorAndDie("Cannot reset the log file multiple times");
+   log_to_file_ = true;
+   log_.open(log_file, std::ofstream::out);
+   if (!log_.is_open())
+     printErrorAndDie("Failed to open the log file: " + log_file);
+ }
 
+ inline std::ostream& full_logger(){
+   return (silent_ ? null_log_ : (log_to_file_ ? log_ : std::cerr));
+ }
 
+ inline std::ostream& selective_logger(){
+   return ((silent_ || quiet_) ? null_log_ : (log_to_file_ ? log_ : std::cerr));
+ }
 
-class BamAlignment {
-private:
-  std::string bases_;
-  std::string qualities_;
-  std::vector<CigarOp> cigar_ops_;
+ void set_sample_set(const std::string& sample_names){
+   std::vector<std::string> sample_list;
+   split_by_delim(sample_names, ',', sample_list);
+   sample_set_ = std::set<std::string>(sample_list.begin(), sample_list.end());
+ }
 
-  void ExtractSequenceFields();
+ static void add_passes_filters_tag(BamAlignment& aln, const std::string& passes);
 
-public:
-  bam1_t *b_;
-  std::string file_;
-  std::string ref_, mate_ref_;
-  bool built_;
-  int32_t length_;
-  int32_t pos_, end_pos_;
+ static void passes_filters(BamAlignment& aln, std::vector<bool>& region_passes);
 
-  BamAlignment(){
-    b_       = bam_init1();
-    built_   = false;
-    length_  = -1;
-    pos_     = 0;
-    end_pos_ = -1;
-  }
+ int32_t MAX_MATE_DIST;
+ int32_t MIN_BP_BEFORE_INDEL;
+ int32_t MIN_FLANK;
+ int32_t MIN_READ_END_MATCH;
+ int32_t MAXIMAL_END_MATCH_WINDOW;
+ int32_t MAX_STR_LENGTH;
 
-  BamAlignment(const BamAlignment &aln)
-    : bases_(aln.bases_), qualities_(aln.qualities_), cigar_ops_(aln.cigar_ops_), file_(aln.file_), ref_(aln.ref_), mate_ref_(aln.mate_ref_){
-    b_ = bam_init1();
-    bam_copy1(b_, aln.b_);
-    built_     = aln.built_;
-    length_    = aln.length_;
-    pos_       = aln.pos_;
-    end_pos_   = aln.end_pos_;
-  }
+ int     REMOVE_PCR_DUPS;
+ int     REQUIRE_SPANNING;
+ int     REQUIRE_PAIRED_READS;  // Only utilize paired STR reads to genotype individuals
 
-  BamAlignment& operator=(const BamAlignment& aln){
-    bam_copy1(b_, aln.b_);
-    file_      = aln.file_;
-    ref_       = aln.ref_;
-    mate_ref_  = aln.mate_ref_;
-    built_     = aln.built_;
-    length_    = aln.length_;
-    pos_       = aln.pos_;
-    end_pos_   = aln.end_pos_;
-    bases_     = aln.bases_;
-    qualities_ = aln.qualities_;
-    cigar_ops_ = aln.cigar_ops_;
-    return *this;
-  }
+ double  MIN_SUM_QUAL_LOG_PROB;
+ int32_t MAX_TOTAL_READS;       // Skip loci where the number of STR reads passing all filters exceeds this limit
+	 char    BASE_QUAL_TRIM;        // Trim boths ends of the read until encountering a base with quality greater than this threshold
+	 //bool    TOO_MANY_READS;        // Flag set if the current locus being processed as too many reads
+	 int     NUM_THREADS;           // Number of Taskflow pipeline lines/worker threads
 
-  ~BamAlignment(){
-    bam_destroy1(b_);
-  }
-
-  /* Number of bases */
-  int32_t Length()              const { return length_;  }
-
-  /* 0-based position where alignment starts*/
-  int32_t Position()            const { return pos_;     }
-
-  /* Non-inclusive end position of alignment */
-  int32_t GetEndPosition()      const { return end_pos_; }
-
-  /* Name of the read */
-  std::string Name()            const { return std::string(bam_get_qname(b_)); }
-
-  /* Name of the read's reference sequence */
-  const std::string& Ref()      const { return ref_;              }
-
-  /* Mapping quality score*/
-  uint16_t MapQuality()         const { return b_->core.qual;     }
-
-  const std::string& MateRef()  const { return mate_ref_;         }
-
-  /* 0-based position where mate's alignment starts */
-  int32_t MatePosition()        const { return b_->core.mpos;     }
-
-  /* Name of file from which the alignment was read */
-  const std::string& Filename() const { return file_;             }
-  
-  /* Sequenced bases */
-  const std::string& QueryBases(){
-    if (!built_) ExtractSequenceFields();
-    return bases_;
-  }
-
-  /* Quality score for each base */
-  const std::string& Qualities(){
-    if (!built_) ExtractSequenceFields();
-    return qualities_;
-  }
-
-  const std::vector<CigarOp>& CigarData(){
-    if (!built_) ExtractSequenceFields();
-    return cigar_ops_;
-  }
-
-  bool RemoveTag(const char tag[2]) const {
-    uint8_t* tag_data = bam_aux_get(b_, tag);
-    if (tag_data == NULL)
-      return false;
-    return (bam_aux_del(b_, tag_data) == 0);
-  }
-
-  bool HasTag(const char tag[2]) const { return bam_aux_get(b_, tag) != NULL; }
-
-  /*
-  bool AddCharTag(const char tag[2], char& value){
-    if (HasTag(tag))
-      return false;
-    return (bam_aux_append(b_, tag, 'A', 1, (uint8_t*)&value) == 0);
-  }
-
-  bool AddIntTag(const char tag[2], int64_t& value){
-    if (HasTag(tag))
-      return false;
-    return (bam_aux_append(b_, tag, 'i', ___, (uint8_t*)&value) == 0);
-  }
-
-  bool AddFloatTag(const char tag[2], double& value){
-    if (HasTag(tag))
-      return false;
-    return (bam_aux_append(b_, tag, 'f', ___, (uint8_t*)&value) == 0);
-  }
+	 /**
+	  * Pipeline code
   */
 
-  bool AddStringTag(const char tag[2], const std::string& value){
-    if (HasTag(tag))
-      return false;
-    return (bam_aux_append(b_, tag, 'Z', value.size()+1, (uint8_t*)value.c_str()) == 0);
-  }
 
-  bool GetCharTag(const char tag[2], char& value) const {
-    uint8_t* tag_data = bam_aux_get(b_, tag);
-    if (tag_data == NULL)
-      return false;
-    value = bam_aux2A(tag_data);
-    return true; // TO DO: Check errno
-  }
 
-  bool GetIntTag(const char tag[2], int64_t& value) const {
-    uint8_t* tag_data = bam_aux_get(b_, tag);
-    if (tag_data == NULL)
-      return false;
-    value = bam_aux2i(tag_data);
-    return true; // TO DO: Check errno
-  }
+  //output of read/filter stage
+  struct RegionWorkItem {
+		size_t region_idx = 0;
+		RegionGroup region_group;
+		std::string chrom_seq;
+		std::vector<std::string> rg_names;
+	    std::vector<BamProcessor::BamAlnList> paired_strs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> mate_pairs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> unpaired_strs_by_rg;
+	    std::vector<BamProcessor::BamAlnList> alignments;
+	    std::vector< std::vector<double> > log_p1s;
+	    std::vector< std::vector<double> > log_p2s;
+	    bool too_many_reads;
+	    std::string log_text;
+	    double bam_seek_time = 0;
+	    double read_filter_time = 0;
+	    double snp_phase_info_time = 0;
 
-  bool GetFloatTag(const char tag[2], double& value) const {
-    uint8_t* tag_data = bam_aux_get(b_, tag);
-    if (tag_data == NULL)
-      return false;
-    value = bam_aux2f(tag_data);
-    return true; // TO DO: Check errno
-  }
-  
-  bool GetStringTag(const char tag[2], std::string& value) const{
-    uint8_t* tag_data = bam_aux_get(b_, tag);
-    if (tag_data == NULL)
-      return false;
-    char* ptr = bam_aux2Z(tag_data);
-    value = std::string(ptr);
-    return true; // TO DO: Check errno
-  }  
+		std::vector<BamAlignment> passing_bam_records;
+		std::vector<FilteredBamRecord> filtered_bam_records;
 
-  bool IsDuplicate()         const { return (b_->core.flag & BAM_FDUP)         != 0;}
-  bool IsFailedQC()          const { return (b_->core.flag & BAM_FQCFAIL)      != 0;}
-  bool IsMapped()            const { return (b_->core.flag & BAM_FUNMAP)       == 0;}
-  bool IsMateMapped()        const { return (b_->core.flag & BAM_FMUNMAP)      == 0;}
-  bool IsReverseStrand()     const { return (b_->core.flag & BAM_FREVERSE)     != 0;}
-  bool IsMateReverseStrand() const { return (b_->core.flag & BAM_FMREVERSE)    != 0;}
-  bool IsPaired()            const { return (b_->core.flag & BAM_FPAIRED)      != 0;}
-  bool IsProperPair()        const { return (b_->core.flag & BAM_FPROPER_PAIR) != 0;}
-  bool IsFirstMate()         const { return (b_->core.flag & BAM_FREAD1)       != 0;}
-  bool IsSecondMate()        const { return (b_->core.flag & BAM_FREAD2)       != 0;}
+	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), too_many_reads(false) {}
 
-  bool StartsWithSoftClip(){
-    if (!built_) ExtractSequenceFields();
-    if (cigar_ops_.empty())
-      return false;
-    return cigar_ops_.front().Type == 'S';
-  }
+	  };
 
-  bool EndsWithSoftClip(){
-    if (!built_) ExtractSequenceFields();
-    if (cigar_ops_.empty())
-      return false;
-    return cigar_ops_.back().Type == 'S';
-  }
+	  struct VCFRecord {
+	    std::string chrom;
+	    int32_t pos;
+	    std::string text;
+	    bool valid;
 
-  bool StartsWithHardClip(){
-    if (!built_) ExtractSequenceFields();
-    if (cigar_ops_.empty())
-      return false;
-    return cigar_ops_.front().Type == 'H';
-  }
+	    VCFRecord() : pos(-1), valid(false) {}
+	  };
 
-  bool EndsWithHardClip(){
-    if (!built_) ExtractSequenceFields();
-    if (cigar_ops_.empty())
-      return false;
-    return cigar_ops_.back().Type == 'H';
-  }
+	  //output of genotype stage
+	  struct RegionResult {
+		size_t region_idx = 0;
+	    std::string chrom;
+	    int32_t pos = -1; //??
+	    std::vector<VCFRecord> vcf_records;
+	    std::string log_text;
+	    std::string viz_text;
+	    std::string stutter_text;
+	    bool has_viz = false;
+	    bool has_stutter = false;
+	    int too_few_reads = 0;
+	    int too_many_reads = 0;
+	    int num_missing_models = 0;
+	    int num_em_converge = 0;
+	    int num_em_fail = 0;
+	    int num_genotype_success = 0;
+	    int num_genotype_fail = 0;
+	    double stutter_time = 0;
+	    double bam_seek_time = 0;
+	    double read_filter_time = 0;
+	    double snp_phase_info_time = 0;
+	    double left_aln_time = 0;
+	    double genotype_time = 0;
+	    double hap_build_time = 0;
+	    double hap_aln_time = 0;
+	    double assembly_time = 0;
+	    double posterior_time = 0;
+	    double aln_trace_time = 0;
 
-  bool MatchesReference(){
-    if (!built_) ExtractSequenceFields();
-    for (auto cigar_iter = cigar_ops_.begin(); cigar_iter != cigar_ops_.end(); cigar_iter++)
-      if (cigar_iter->Type != 'M' && cigar_iter->Type != '=')
-	return false;
-    return true;
-  }
+		std::vector<BamAlignment> passing_bam_records;
+		std::vector<FilteredBamRecord> filtered_bam_records;
+	  };
 
-  void SetIsDuplicate(bool ok){
-    if (ok) b_->core.flag |= BAM_FDUP;
-    else    b_->core.flag &= (~BAM_FDUP);
-  }
+	  struct PipelineLineContext {
+		std::unique_ptr<BamCramMultiReader> reader;
+		std::unique_ptr<FastaReader> fasta_reader;
+		std::unique_ptr<AdapterTrimmer> adapter_trimmer;
+		std::string cur_chrom;
+		std::string chrom_seq;
+		std::unique_ptr<RegionWorkItem> work_item;
+		std::unique_ptr<RegionResult> result;
 
-  void SetIsFailedQC(bool ok){
-    if (ok) b_->core.flag |= BAM_FQCFAIL;
-    else    b_->core.flag &= (~BAM_FQCFAIL);
-  }
+		
+	  };
 
-  void SetIsMapped(bool ok){
-    if (ok) b_->core.flag &= (~BAM_FUNMAP);
-    else    b_->core.flag |= BAM_FUNMAP;
-  }
+	  bool make_region_work_item(
+	    BamCramMultiReader& reader,
+		AdapterTrimmer& adapter_trimmer,
+	    const std::map<std::string, std::string>& rg_to_sample,
+	    const std::map<std::string, std::string>& rg_to_library,
+	    const Region& region,
+	    const std::string& chrom_seq,
+	    BamWriter* pass_writer,
+	    BamWriter* filt_writer,
+	    std::ostream& logger,
+	    RegionWorkItem& item);
 
-  void SetIsMateMapped(bool ok){
-    if (ok) b_->core.flag &= (~BAM_FMUNMAP);
-    else    b_->core.flag |= BAM_FMUNMAP;
-  }
+	  virtual bool prepare_region_work_item(RegionWorkItem& item, std::ostream& logger) { return true; }
 
-  void SetIsReverseStrand(bool ok){
-    if (ok) b_->core.flag |= BAM_FREVERSE;
-    else    b_->core.flag &= (~BAM_FREVERSE);
-  }
+	  virtual void process_region_item(
+	    RegionWorkItem& item,
+	    RegionResult& result) = 0;
 
-  void SetIsMateReverseStrand(bool ok){
-    if (ok) b_->core.flag |= BAM_FMREVERSE;
-    else    b_->core.flag &= (~BAM_FMREVERSE);
-  }
-
-  void SetIsPaired(bool ok){
-    if (ok) b_->core.flag |= BAM_FPAIRED;
-    else    b_->core.flag &= (~BAM_FPAIRED);
-  }
-
-  void SetIsProperPair(bool ok){
-    if (ok) b_->core.flag |= BAM_FPROPER_PAIR;
-    else    b_->core.flag &= (~BAM_FPROPER_PAIR);
-  }
-
-  void SetIsFirstMate(bool ok){
-    if (ok) b_->core.flag |= BAM_FREAD1;
-    else    b_->core.flag &= (~BAM_FREAD1);
-  }
-
-  void SetIsSecondMate(bool ok){
-    if (ok) b_->core.flag |= BAM_FREAD2;
-    else    b_->core.flag &= (~BAM_FREAD2);
-  }
-
-  /*
-   *  Trim an alignment that extends too far upstream or downstream of the provided region or has low base qualities on the ends
-   *  Trims until either i) the base quality exceeds the provided threshold or ii) the alignment is fully within the provided region bounds
-   *  Modifies the alignment such that subsequent calls to each function reflect the trimmming
-   *  However, if the aligment is written to a new BAM file, the original alignment will be output
-   */
-  void TrimAlignment(int32_t min_read_start, int32_t max_read_stop, char min_base_qual='~');
-
-  void TrimLowQualityEnds(char min_base_qual);
-
-  void TrimNumBases(int left_trim, int right_trim);
+	  virtual void write_region_result(
+	    const RegionResult& result) = 0;
 };
 
-
-std::string BuildCigarString(const std::vector<CigarOp>& cigar_data);
-
-
-class ReadGroup {
- private:
-  std::string id_;
-  std::string sample_;
-  std::string library_;
-
- public:
-  ReadGroup(){}
-
-  ReadGroup(const std::string& id, const std::string& sample, const std::string& library)
-    : id_(id), sample_(sample), library_(library){}
-
-  bool HasID()      const { return !id_.empty();      }
-  bool HasSample()  const { return !sample_.empty();  }
-  bool HasLibrary() const { return !library_.empty(); }
-
-  const std::string& GetID()      const { return id_;      }
-  const std::string& GetSample()  const { return sample_;  }
-  const std::string& GetLibrary() const { return library_; }
-
-  void SetID(const std::string& id)          { id_      = id;      }
-  void SetSample(const std::string& sample)  { sample_  = sample;  }
-  void SetLibrary(const std::string& library){ library_ = library; }
-};
-
-
-
-
-
-
-class BamHeader {
- protected:
-  std::map<std::string, int32_t> seq_indices_;
-  std::vector<std::string> seq_names_;
-  std::vector<uint32_t> seq_lengths_;
-  std::vector<ReadGroup> read_groups_;
-
-  void parse_read_groups(const char *text);
-
- public:
-  bam_hdr_t *header_;
-
-  explicit BamHeader(bam_hdr_t *header){
-    header_ = header;
-    for (int32_t i = 0; i < header_->n_targets; i++){
-      seq_names_.push_back(std::string(header_->target_name[i]));
-      seq_lengths_.push_back(header_->target_len[i]);
-      seq_indices_.insert(std::pair<std::string, int32_t>(seq_names_.back(), i));
-    }
-    parse_read_groups(header_->text);
-  }
-
-  const std::vector<uint32_t>& seq_lengths()  const { return seq_lengths_; }
-  const std::vector<std::string>& seq_names() const { return seq_names_;   }
-  virtual const std::vector<ReadGroup>& read_groups(int file_index) const {
-    assert(file_index == 0);
-    return read_groups_;
-  }
-
-
-  int32_t num_seqs() const { return header_->n_targets; }
-  int32_t ref_id(const std::string& ref) const {
-    auto iter = seq_indices_.find(ref);
-    if (iter == seq_indices_.end())
-      return -1;
-    return iter->second;
-  }
-  
-  std::string ref_name(int32_t ref_id) const {
-    if (ref_id == -1)
-      return "*";
-    if (ref_id >= 0 && ref_id < seq_names_.size())
-      return seq_names_[ref_id];
-    printErrorAndDie("Invalid reference ID provided to ref_name() function");
-  }
-
-  uint32_t ref_length(int32_t ref_id) const {
-    if (ref_id >= 0 && ref_id < seq_lengths_.size())
-      return seq_lengths_[ref_id];
-    printErrorAndDie("Invalid reference ID provided to ref_length() function");
-  }
-};
-
-void compare_bam_headers(const BamHeader* hdr_a, const BamHeader* hdr_b, const std::string& file_a, const std::string& file_b);
-
-
-class BamMultiHeader : public BamHeader {
- private:
-  std::string base_file_name_;
-  std::vector< std::vector<ReadGroup> > read_groups_by_file_;
-
- public:
- BamMultiHeader(const BamHeader* header, const std::string& filename) : BamHeader(header->header_){
-    base_file_name_ = filename;
-    read_groups_by_file_.push_back(read_groups_);
-    read_groups_.clear();
-  }
-
-  void add_header(const BamHeader* header, const std::string& file_name){
-    // Ensure that the header sequences are consistent
-    compare_bam_headers(this, header, base_file_name_, file_name);
-
-    // Add the read groups
-    parse_read_groups(header->header_->text);
-    read_groups_by_file_.push_back(read_groups_);
-    read_groups_.clear();
-  }
-
-  const std::vector<ReadGroup>& read_groups(int file_index) const { return read_groups_by_file_[file_index]; }
-};
-
-
-
-
-class BamCramReader {
-private:
-  samFile   *in_;
-  bam_hdr_t *hdr_;
-  hts_idx_t *idx_;
-  std::string path_;
-  BamHeader*  header_;
-  bool shared_header_;
-  bool cram_done_;
-
-  // Instance variables for the most recently set region
-  hts_itr_t *iter_;        // Iterator
-  std::string chrom_;      // Chromosome
-  int32_t     start_;      // Start position
-  int32_t     end_;        // End position
-  uint64_t    min_offset_; // Offset after first alignment. For BAMs, this is a memory offset, while for CRAMs its
-                           // the index of the first alignment in the CRAM slice
-  BamAlignment first_aln_; // First alignment
-  bool reuse_first_aln_;
-
-  // Private unimplemented copy constructor and assignment operator to prevent operations
-  BamCramReader(const BamCramReader& other);
-  BamCramReader& operator=(const BamCramReader& other);
-
-  bool file_exists(const std::string& path){
-    return (access(path.c_str(), F_OK) != -1);
-  }
-
-  void clear_cram_data_structures();
-
-public:
-  BamCramReader(const std::string& path, std::string fasta_path = "");
-
-  const BamHeader* bam_header() const { return header_; }
-  const std::string& path()     const { return path_;   }
-  
-  ~BamCramReader();
-
-  bool GetNextAlignment(BamAlignment& aln);
-
-  // Prepare the BAM/CRAM for reading the entire chromosome
-  bool SetChromosome(const std::string& chrom);
-  
-  // Prepare the BAM/CRAM for reading all alignments overlapping the provided region
-  bool SetRegion(const std::string& chrom, int32_t start, int32_t end);
-
-  void use_shared_header(BamHeader* header){
-    if (!shared_header_){
-      bam_hdr_destroy(hdr_);
-      delete header_;
-    }
-
-    shared_header_ = true;
-    header_        = header;
-    hdr_           = header_->header_;
-  }
-};
-
-
-
-
-
-
-class BamCramMultiReader {
- private:
-  std::vector<BamCramReader*> bam_readers_;
-  std::vector<bool> reader_unset_;
-  std::vector<BamAlignment> cached_alns_;
-  std::vector<std::pair<int32_t, int32_t> > aln_heap_;
-  int merge_type_;
-  BamMultiHeader* multi_header_;
-
-  // Instance variables for the most recently set region
-  std::string chrom_;      // Chromosome
-  int32_t     start_;      // Start position
-  int32_t     end_;        // End position
-
-  // Private unimplemented copy constructor and assignment operator to prevent operations
-  BamCramMultiReader(const BamCramMultiReader& other);
-  BamCramMultiReader& operator=(const BamCramMultiReader& other);
-
- public:
-  const static int ORDER_ALNS_BY_POSITION = 0;
-  const static int ORDER_ALNS_BY_FILE     = 1;
-
-  BamCramMultiReader(const std::vector<std::string>& paths, std::string fasta_path = "", int merge_type = ORDER_ALNS_BY_POSITION, bool share_headers = true){
-    if (paths.empty())
-      printErrorAndDie("Must provide at least one file to BamCramMultiReader constructor");
-    if (merge_type != ORDER_ALNS_BY_POSITION && merge_type != ORDER_ALNS_BY_FILE)
-      printErrorAndDie("Invalid merge type provided to BamCramMultiReader constructor");
-    for (size_t i = 0; i < paths.size(); i++){
-      cached_alns_.push_back(BamAlignment());
-      bam_readers_.push_back(new BamCramReader(paths[i], fasta_path));
-      if (i == 0)
-	multi_header_ = new BamMultiHeader(bam_readers_[i]->bam_header(), paths[i]);
-      else {
-	multi_header_->add_header(bam_readers_[i]->bam_header(), paths[i]);
-	if (share_headers)
-	  bam_readers_[i]->use_shared_header(multi_header_);
-      }
-    }
-    merge_type_   = merge_type;
-    reader_unset_ = std::vector<bool>(bam_readers_.size(), false);
-    chrom_        = "";
-    start_        = -1;
-    end_          = -1;
-  }
-
-  ~BamCramMultiReader(){
-    delete multi_header_;
-    for (size_t i = 0; i < bam_readers_.size(); i++)
-      delete bam_readers_[i];
-  }
-
-  int get_merge_type() const { return merge_type_; }
-  const BamHeader* bam_header() const { return multi_header_; }
-
-  bool SetRegion(const std::string& chrom, int32_t start, int32_t end);
-
-  bool GetNextAlignment(BamAlignment& aln);
-};
-
-
-
-
-
-
-
-
-class BamWriter {
- private:
-  BGZF* output_;
-
-  // Private unimplemented copy constructor and assignment operator to prevent operations
-  BamWriter(const BamWriter& other);
-  BamWriter& operator=(const BamWriter& other);
-
- public:
-  BamWriter(const std::string& path, const BamHeader* bam_header){
-    std::string mode = "w";
-    output_ = bgzf_open(path.c_str(), mode.c_str());
-    if (output_ == NULL)
-      printErrorAndDie("Failed to open BAM output file");
-    if (bam_hdr_write(output_, bam_header->header_) == -1)
-      printErrorAndDie("Failed to write the BAM header to the output file");
-  }
-
-  void Close(){
-    if (bgzf_close(output_) != 0)
-      printErrorAndDie("Failed to close BAM output file");
-    output_ = NULL;
-  }
-
-  bool SaveAlignment(BamAlignment& aln){
-    if (output_ == NULL)
-      return false;
-    return (bam_write1(output_, aln.b_) != -1);
-  }
-
-  ~BamWriter(){
-    if (output_ != NULL)
-      bgzf_close(output_);
-  }
-};
 
 #endif
