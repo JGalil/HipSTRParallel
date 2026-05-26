@@ -762,9 +762,6 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
       std::unique_ptr<RegionResult> result(new RegionResult());
       result->region_idx = item.region_idx;
 
-      result->passing_bam_records.reserve(1000);
-      result->filtered_bam_records.reserve(2000);
-
       if (region.stop() - region.start() > MAX_STR_LENGTH){
         num_too_long_++;
         result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +

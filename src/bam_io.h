@@ -84,44 +84,8 @@ public:
     return *this;
   }
 
-  // Move Constructor
-  BamAlignment(BamAlignment&& aln) noexcept
-    : bases_(std::move(aln.bases_)), qualities_(std::move(aln.qualities_)), 
-      cigar_ops_(std::move(aln.cigar_ops_)), file_(std::move(aln.file_)), 
-      ref_(std::move(aln.ref_)), mate_ref_(std::move(aln.mate_ref_)) {
-    b_ = aln.b_;
-    aln.b_ = nullptr; // Take ownership of the HTSlib struct pointer
-    built_ = aln.built_;
-    length_ = aln.length_;
-    pos_ = aln.pos_;
-    end_pos_ = aln.end_pos_;
-  }
-
-  // Move Assignment Operator
-  BamAlignment& operator=(BamAlignment&& aln) noexcept {
-    if (this != &aln) {
-      if (b_ != nullptr) bam_destroy1(b_); // Free our current struct if we have one
-      b_ = aln.b_;
-      aln.b_ = nullptr; // Take ownership
-      file_ = std::move(aln.file_);
-      ref_ = std::move(aln.ref_);
-      mate_ref_ = std::move(aln.mate_ref_);
-      built_ = aln.built_;
-      length_ = aln.length_;
-      pos_ = aln.pos_;
-      end_pos_ = aln.end_pos_;
-      bases_ = std::move(aln.bases_);
-      qualities_ = std::move(aln.qualities_);
-      cigar_ops_ = std::move(aln.cigar_ops_);
-    }
-    return *this;
-  }
-
   ~BamAlignment(){
-    if(b_ != nullptr) {
-      bam_destroy1(b_);
-    }
-    
+    bam_destroy1(b_);
   }
 
   /* Number of bases */
