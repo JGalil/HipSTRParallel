@@ -605,7 +605,7 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 BamWriter* filt_writer,
 					 std::ostream& logger,
 					 RegionWorkItem& item) {
-  item.chrom_seq = chrom_seq;
+  item.chrom_seq = &chrom_seq;
 
   auto seek_start = std::chrono::steady_clock::now();
   if (!reader.SetRegion(region.chrom(), (region.start() < MAX_MATE_DIST ? 0 : region.start()-MAX_MATE_DIST),
@@ -707,7 +707,8 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   
   //one executor with pipeline_lines worker threads
   size_t pipeline_lines = std::max<size_t>(1, 2*NUM_THREADS);
-  tf::Executor executor(pipeline_lines);
+  size_t executor_workers = std::max<size_t>(1, NUM_THREADS);
+  tf::Executor executor(executor_workers);
   tf::Taskflow taskflow;
   std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
   std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
