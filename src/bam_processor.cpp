@@ -265,6 +265,7 @@ bool BamProcessor::read_and_filter_reads(BamCramMultiReader& reader, AdapterTrim
 
       // Apply adapter trimming
       adapter_trimmer.trim_adapters(alignment);
+      logger << adapter_trimmer.get_trimming_stats_msg() << "\n";
 
       if (alignment.CigarData().size() == 0 || alignment.Length() == 0)
 	continue;
@@ -600,10 +601,10 @@ bool BamProcessor::make_region_work_item(BamCramMultiReader& reader,
 					 const std::map<std::string, std::string>& rg_to_library,
 					 const Region& region,
 					 const std::string& chrom_seq,
-					 BamWriter* pass_writer,
-						 BamWriter* filt_writer,
-						 std::ostream& logger,
-						 RegionWorkItem& item) {
+					 std::ostream& logger,
+					 RegionWorkItem& item) {
+  // Store a pointer into the per-line context's chrom_seq buffer; the buffer
+  // outlives the work item so this is safe. Avoids copying the full chromosome.
   item.chrom_seq = &chrom_seq;
 
   auto seek_start = std::chrono::steady_clock::now();
@@ -689,28 +690,32 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   init_output_vcf(fasta_file, chroms, full_command);
 
   //region ordering
-  std::vector<std::unique_ptr<RegionResult>> pending_results(regions.size());
+  std::map<size_t, std::unique_ptr<RegionResult>> pending_results;
   size_t next_result_to_write = 0;
 
   auto flush_ready_results = [&]() {
-    while (next_result_to_write < regions.size() &&
-           pending_results[next_result_to_write]){
-        write_region_result(*pending_results[next_result_to_write]);
-        pending_results[next_result_to_write].reset();
-        next_result_to_write++;
+    while(true) {
+      auto iter = pending_results.find(next_result_to_write);
+      if(iter == pending_results.end()) break;
+
+      write_region_result(*iter->second);
+      pending_results.erase(iter);
+      ++next_result_to_write;
     }
   };
 
   
-  // Use 2x the requested threads as in-flight pipeline lines, but keep the
-  // actual worker pool at --threads to avoid oversubscribing CPU resources.
-  size_t pipeline_lines = std::max<size_t>(1, 2*NUM_THREADS);
+  // pipeline_lines controls how many regions are in-flight simultaneously.
+  // Cap at 16 regardless of thread count: beyond that the per-line working set
+  // (BAM reader buffers + read vectors + score matrices) overflows L3/RAM and
+  // causes major page faults, as seen at 12-14 threads in benchmarks.
+  // executor_workers is kept at NUM_THREADS to avoid CPU oversubscription.
+  size_t pipeline_lines   = std::min(std::max<size_t>(1, 2*NUM_THREADS), (size_t)16);
   size_t executor_workers = std::max<size_t>(1, NUM_THREADS);
   tf::Executor executor(executor_workers);
   tf::Taskflow taskflow;
-  //std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
+  std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
   std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
-  std::vector<size_t> region_indices(pipeline_lines, 0);
 
   int merge_type = BamCramMultiReader::ORDER_ALNS_BY_FILE;
   size_t next_region = 0;
@@ -725,86 +730,142 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   tf::Pipeline pipeline(
     pipeline_lines,
     // STAGE 0: Taskflow requires the first pipe to be serial. Keep this pipe
-    // tiny it only creates a token for the next region.
+    // tiny; it only creates a token for the next region.
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
+      work_items[pf.line()].reset();
+      results[pf.line()].reset();
+      contexts[pf.line()].work_item.reset();
+      contexts[pf.line()].result.reset();
+
       if (next_region >= regions.size()){
         pf.stop();
         return;
       }
-      region_indices[pf.line()] = next_region++;
+
+      size_t my_idx = next_region++;
+      work_items[pf.line()] = std::make_unique<RegionWorkItem>(my_idx, RegionGroup(regions[my_idx]));
     }},
     // STAGE 1: All real per-region work happens here in parallel.
     tf::Pipe{tf::PipeType::PARALLEL, [&](tf::Pipeflow& pf) {
-      //work_items[pf.line()].reset(); not used
+      if (!work_items[pf.line()])
+        return;
       results[pf.line()].reset();
       auto& ctx = contexts[pf.line()];
       ctx.work_item.reset();
       ctx.result.reset();
 
-      size_t my_idx = region_indices[pf.line()];
-      const Region& region = regions[my_idx];
-
+      auto& item = *work_items[pf.line()];
+      const Region& region = item.region_group.regions()[0];
       std::ostringstream line_log;
-      line_log << "Processing region " << region.chrom()
-              << " " << region.start()
-              << " " << region.stop() << "\n";
+      line_log << "" << "Processing region " << region.chrom() << " " << region.start() << " " << region.stop() << "\n";
 
-      auto result = std::make_unique<RegionResult>();
-      result->region_idx = my_idx;
+      std::unique_ptr<RegionResult> result(new RegionResult());
+      result->region_idx = item.region_idx;
 
-      // Skip checks before any RegionWorkItem allocation
+      result->passing_bam_records.reserve(1000);
+      result->filtered_bam_records.reserve(2000);
+
       if (region.stop() - region.start() > MAX_STR_LENGTH){
-          num_too_long_++;
-          result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +
-            std::to_string(region.stop() - region.start()) +
-            " vs " + std::to_string(MAX_STR_LENGTH) + ")\n"
-            "You can increase this threshold using the --max-str-len option\n";
-          results[pf.line()] = std::move(result);
-          return;  // no work_item needed, no allocation
+        num_too_long_++;
+        result->log_text = line_log.str() + "Skipping region as the reference allele length exceeds the threshold (" +
+          std::to_string(region.stop() - region.start()) +
+          " vs " + std::to_string(MAX_STR_LENGTH) + ")\n"
+          "You can increase this threshold using the --max-str-len option\n";
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
       if (region.chrom().compare(ctx.cur_chrom) != 0){
-          ctx.cur_chrom = region.chrom();
-          ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
-          assert(ctx.chrom_seq.size() != 0);
+        ctx.cur_chrom = region.chrom();
+        ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
+        assert(ctx.chrom_seq.size() != 0);
       }
 
       if (region.start() < 50 || region.stop()+50 >= ctx.chrom_seq.size()){
-          result->log_text = line_log.str() + "Skipping region within 50bp of the end of the contig\n";
-          results[pf.line()] = std::move(result);
-          return;  // no work_item needed, no allocation
+        line_log << "Skipping region within 50bp of the end of the contig\n";
+        result->log_text = line_log.str();
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
-      // Only allocate RegionWorkItem if we're actually going to process it
-      auto item = std::make_unique<RegionWorkItem>(my_idx, RegionGroup(region));
-
-      bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer,
-                  rg_to_sample, rg_to_library,
-                  region, ctx.chrom_seq,
-                  pass_writer, filt_writer, line_log, *item) &&
-                prepare_region_work_item(*item, line_log);
-
-      if (!ok){
-          result->log_text = line_log.str();
-          results[pf.line()] = std::move(result);
-          return;
+      // pass_writer/filt_writer are no longer passed into make_region_work_item.
+      // Reads accumulate in item.passing_bam_records / item.filtered_bam_records
+      // during Stage 1 and are flushed under a single mutex acquisition in
+      // Stage 2, eliminating per-read lock contention across parallel lines.
+      bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer, rg_to_sample, rg_to_library,
+              region, ctx.chrom_seq,
+              line_log, item) &&
+              prepare_region_work_item(item, line_log);
+      if (!ok) {
+        result->log_text = line_log.str();
+        results[pf.line()] = std::move(result);
+        work_items[pf.line()].reset();
+        return;
       }
 
-      item->log_text = line_log.str();
+      item.log_text = line_log.str();
 
       auto t0 = std::chrono::high_resolution_clock::now();
-      process_region_item(*item, *result);
-      result->region_idx = item->region_idx;
+      process_region_item(item, *result);
+      result->region_idx = item.region_idx;
       auto t1 = std::chrono::high_resolution_clock::now();
-      double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-      result->log_text += "[line " + std::to_string(pf.line()) +
-                          "] process_region_item: " + std::to_string(ms) + " ms\n";
+      double process_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+      // Change 3: surface all three timing phases so TFProf gaps can be
+      // attributed to I/O (bam_seek), filtering (read_filter), or compute
+      // (process). bam_seek_time and read_filter_time are populated by
+      // make_region_work_item but were previously never logged.
+      result->log_text += "[line "   + std::to_string(pf.line()) + "]"
+        + " bam_seek="    + std::to_string(item.bam_seek_time    * 1000.0) + "ms"
+        + " read_filter=" + std::to_string(item.read_filter_time * 1000.0) + "ms"
+        + " process="     + std::to_string(process_ms)                     + "ms\n";
+
+      // OPTION A: Heavy string/tag manipulation done in parallel
+      if (filt_writer_ != NULL && !item.filtered_bam_records.empty()) {
+        for (auto& rec : item.filtered_bam_records) {
+          if (rec.aln.HasTag("FT")) {
+            if (!rec.aln.RemoveTag("FT"))
+              printErrorAndDie("Failed to remove alignment's FT tag");
+          }
+          if (!rec.aln.AddStringTag("FT", rec.filter))
+            printErrorAndDie("Failed to add filter tag to alignment");
+        }
+      }
 
       results[pf.line()] = std::move(result);
     }},
-    // STAGE 2
+    // STAGE 2: ordered result collection, VCF output, and deferred BAM writes.
+    // Flushing BAM records here (serial, once per region) instead of inside
+    // read_and_filter_reads (parallel, once per read) removes the hot-path
+    // bam_writer_mutex_ contention that caused system-time to grow 2.3x
+    // between 8 and 14 threads in benchmarks.
     tf::Pipe{tf::PipeType::SERIAL, [&](tf::Pipeflow& pf) {
-      if (!results[pf.line()]) return;
+      if (!results[pf.line()])
+        return;
+
+      auto& item = work_items[pf.line()];
+      if (item) {
+        // Coarse lock: acquire once per region batch rather than per read
+        std::lock_guard<std::mutex> lock(bam_writer_mutex_);
+
+        if (pass_writer_ != NULL && !item->passing_bam_records.empty()) {
+          for (auto& aln : item->passing_bam_records) {
+            if (!pass_writer_->SaveAlignment(aln))
+              printErrorAndDie("Failed to save passing alignment");
+          }
+        }
+        
+        if (filt_writer_ != NULL && !item->filtered_bam_records.empty()) {
+          for (auto& rec : item->filtered_bam_records) {
+            if (!filt_writer_->SaveAlignment(rec.aln))
+              printErrorAndDie("Failed to save filtered alignment");
+          }
+        }
+        item.reset();
+      }
+
       size_t idx = results[pf.line()]->region_idx;
       pending_results[idx] = std::move(results[pf.line()]);
       flush_ready_results();
