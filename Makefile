@@ -25,11 +25,14 @@ SRC_HIPSTR  = src/hipstr_main.cpp src/bam_processor.cpp src/stutter_model.cpp sr
 SRC_SEQALN  = src/SeqAlignment/HapAligner.cpp src/SeqAlignment/AlignmentModel.cpp src/SeqAlignment/AlignmentOps.cpp src/SeqAlignment/HapBlock.cpp src/SeqAlignment/NeedlemanWunsch.cpp src/SeqAlignment/Haplotype.cpp src/SeqAlignment/HaplotypeGenerator.cpp src/SeqAlignment/HTMLCreator.cpp src/SeqAlignment/AlignmentViz.cpp src/SeqAlignment/AlignmentTraceback.cpp src/SeqAlignment/StutterAlignerClass.cpp
 SRC_DENOVO  = src/denovos/denovo_main.cpp src/error.cpp src/stringops.cpp src/version.cpp src/pedigree.cpp src/haplotype_tracker.cpp src/vcf_input.cpp src/denovos/denovo_scanner.cpp src/mathops.cpp src/vcf_reader.cpp src/denovos/denovo_allele_priors.cpp src/denovos/trio_denovo_scanner.cpp
 
+SRC = $(SRC_COMMON) $(SRC_HIPSTR) $(SRC_SEQALN) $(SRC_DENOVO)
+
 # For each CPP file, generate an object file
 OBJ_COMMON  := $(SRC_COMMON:.cpp=.o)
 OBJ_HIPSTR  := $(SRC_HIPSTR:.cpp=.o)
 OBJ_SEQALN  := $(SRC_SEQALN:.cpp=.o)
 OBJ_DENOVO  := $(SRC_DENOVO:.cpp=.o)
+DEP         := $(SRC:.cpp=.d)
 
 CEPHES_ROOT=lib/cephes
 HTSLIB_ROOT=lib/htslib
@@ -73,7 +76,7 @@ version:
 # Clean the generated files of the main project only
 .PHONY: clean
 clean:
-	rm -f *~ src/*.o src/*.d src/*~ src/SeqAlignment/*~ src/SeqAlignment/*.o src/denovos/*~ src/denovos/*.o HipSTR DenovoFinder test/allele_expansion_test test/fast_ops_test test/haplotype_test test/read_vcf_alleles_test test/snp_tree_test test/vcf_snp_tree_test
+	rm -f *~ src/*.o src/*.d src/*~ src/SeqAlignment/*~ src/SeqAlignment/*.o src/SeqAlignment/*.d src/denovos/*~ src/denovos/*.o src/denovos/*.d HipSTR DenovoFinder test/allele_expansion_test test/fast_ops_test test/haplotype_test test/read_vcf_alleles_test test/snp_tree_test test/vcf_snp_tree_test
 
 # ====================================================================
 # 3. ADD AUTOMATION TO CLEAN THE MIMALLOC ARTIFACTS
@@ -84,8 +87,8 @@ clean-all: clean
 	rm -f lib/cephes/*.o $(CEPHES_LIB)
 	rm -rf $(MIMALLOC_ROOT)/build
 
-# The GNU Make trick to include the ".d" (dependencies) files.
-include $(subst .cpp,.d,$(SRC))
+# Include auto-generated header dependencies when present.
+-include $(DEP)
 
 # ====================================================================
 # 4. DEPENDENCY TRACKING: ENSURE HIPSTR REBUILDS IF MIMALLOC CHANGES
@@ -119,11 +122,7 @@ test/vcf_snp_tree_test: test/vcf_snp_tree_test.cpp src/error.cpp src/snp_tree.cp
 
 # Build each object file independently
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -o $@ -c $<
-
-# Auto-Generate header dependencies for each CPP file.
-%.d: %.cpp
-	$(CXX) -c -MP -MD $(CXXFLAGS) $(INCLUDE) $< > $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -MMD -MP -o $@ -c $<
 
 # Rebuild CEPHES library if needed
 $(CEPHES_LIB):
