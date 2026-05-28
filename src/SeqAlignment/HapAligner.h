@@ -18,6 +18,18 @@ class HapAligner {
   std::vector<HapBlock*> rev_blocks_;
   std::vector<int32_t> repeat_starts_;
   std::vector<int32_t> repeat_ends_;
+  std::vector<double> base_log_wrong_buf_;
+  std::vector<double> base_log_correct_buf_;
+  std::vector<double> l_match_matrix_buf_;
+  std::vector<double> l_insert_matrix_buf_;
+  std::vector<double> l_deletion_matrix_buf_;
+  std::vector<double> r_match_matrix_buf_;
+  std::vector<double> r_insert_matrix_buf_;
+  std::vector<double> r_deletion_matrix_buf_;
+  std::vector<int> l_best_artifact_size_buf_;
+  std::vector<int> l_best_artifact_pos_buf_;
+  std::vector<int> r_best_artifact_size_buf_;
+  std::vector<int> r_best_artifact_pos_buf_;
 
   /**
    * Align the sequence contained in SEQ_0 -> SEQ_N using the recursion

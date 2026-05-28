@@ -573,6 +573,7 @@ class BamWriter {
     output_ = bgzf_open(path.c_str(), mode.c_str());
     if (output_ == NULL)
       printErrorAndDie("Failed to open BAM output file");
+    
     if (bam_hdr_write(output_, bam_header->header_) == -1)
       printErrorAndDie("Failed to write the BAM header to the output file");
   }

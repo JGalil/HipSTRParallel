@@ -406,7 +406,7 @@ void GenotyperBamProcessor::process_region_item(RegionWorkItem& item, RegionResu
   result.passing_bam_records = std::move(item.passing_bam_records);
   result.filtered_bam_records = std::move(item.filtered_bam_records);
   analyze_reads_and_phasing(item.alignments, item.log_p1s, item.log_p2s,
-			    item.rg_names, item.region_group, item.chrom_seq,
+			    item.rg_names, item.region_group, *item.chrom_seq,
 			    item.too_many_reads, &result);
 }
 
@@ -430,11 +430,12 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   process_timer_.add_time("Posterior computation", result.posterior_time);
   process_timer_.add_time("Alignment traceback",   result.aln_trace_time);
 
-  for (auto aln : result.passing_bam_records) {
-    write_passing_alignment(aln, pass_writer_);
+  for (const auto& aln : result.passing_bam_records) {
+    write_passing_alignment(const_cast<BamAlignment&>(aln), pass_writer_);
   }
-  for (auto rec : result.filtered_bam_records) {
-    write_filtered_alignment(rec.aln, rec.filter, filt_writer_);
+
+  for (const auto& rec : result.filtered_bam_records) {
+    write_filtered_alignment(const_cast<BamAlignment&>(rec.aln), rec.filter, filt_writer_);
   }
 
   if (!result.log_text.empty())
