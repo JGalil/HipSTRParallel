@@ -4,6 +4,7 @@
 #include <memory>
 #include <sstream>
 #include <time.h>
+#include <unordered_map>
 
 //#include "sys/sysinfo.h"
 //#include "sys/types.h"
@@ -51,7 +52,7 @@ double GenotyperBamProcessor::left_align_reads(const RegionGroup& region_group, 
 						     std::ostream& logger){
   auto left_aln_start = std::chrono::steady_clock::now();
   logger << "Left aligning reads" << std::endl;
-  std::map<std::string, int> seq_to_alns;
+  std::unordered_map<std::string, int> seq_to_alns;
   int32_t align_fail_count = 0, total_reads = 0;
   left_alns.clear(); filt_log_p1.clear(); filt_log_p2.clear();
 

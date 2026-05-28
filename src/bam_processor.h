@@ -234,7 +234,7 @@ class BamProcessor {
 		std::vector<BamAlignment> passing_bam_records;
 		std::vector<FilteredBamRecord> filtered_bam_records;
 
-	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), too_many_reads(false) {}
+	    RegionWorkItem(size_t idx, const RegionGroup& rg) : region_idx(idx), region_group(rg), chrom_seq(NULL), too_many_reads(false) {}
 
 	  };
 
