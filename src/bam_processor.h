@@ -283,10 +283,7 @@ class BamProcessor {
 
 	  struct PipelineLineContext {
 		std::unique_ptr<BamCramMultiReader> reader;
-		std::unique_ptr<FastaReader> fasta_reader;
 		std::unique_ptr<AdapterTrimmer> adapter_trimmer;
-		std::string cur_chrom;
-		std::string chrom_seq;
 		std::unique_ptr<RegionWorkItem> work_item;
 		std::unique_ptr<RegionResult> result;
 

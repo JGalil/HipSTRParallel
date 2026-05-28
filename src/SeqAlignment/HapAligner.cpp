@@ -24,12 +24,11 @@ const double IMPOSSIBLE = -1000000000;
 const double MIN_SNP_LOG_PROB_CORRECT = -0.0043648054;
 
 void HapAligner::align_seq_to_hap(Haplotype* haplotype, bool reuse_alns,
-				  const char* seq_0, int seq_len, const double* base_log_wrong, const double* base_log_correct,
-				  double* match_matrix, double* insert_matrix, double* deletion_matrix,
-				  int* best_artifact_size, int* best_artifact_pos, double& left_prob){
+					  const char* seq_0, int seq_len, const double* base_log_wrong, const double* base_log_correct,
+					  double* match_matrix, double* insert_matrix, double* deletion_matrix,
+					  int* best_artifact_size, int* best_artifact_pos, double& left_prob){
   // NOTE: Input matrix structure: Row = Haplotype position, Column = Read index
-  double* L_log_probs = new double[seq_len];
- 
+
   // Initialize first row of matrix (each base position matched with leftmost haplotype base)
   left_prob = 0.0;
   char first_hap_base = haplotype->get_first_char();
@@ -38,7 +37,6 @@ void HapAligner::align_seq_to_hap(Haplotype* haplotype, bool reuse_alns,
     insert_matrix[j]   = base_log_correct[j] + left_prob;
     deletion_matrix[j] = IMPOSSIBLE;
     left_prob         += base_log_correct[j];
-    L_log_probs[j]     = left_prob;
   }
 
   int haplotype_index = 1;
@@ -156,7 +154,6 @@ void HapAligner::align_seq_to_hap(Haplotype* haplotype, bool reuse_alns,
       }
     }
   }
-  delete [] L_log_probs;
   assert(haplotype_index == haplotype->cur_size());
 }
 
@@ -595,13 +592,24 @@ std::string HapAligner::retrace(Haplotype* haplotype, const char* read_seq, cons
 }
 
 void HapAligner::process_read(const Alignment& aln, int seed_base, const BaseQuality* base_quality, bool retrace_aln,
-			      double* prob_ptr, AlignmentTrace& trace){
+				      double* prob_ptr, AlignmentTrace& trace){
   assert(seed_base != -1);
   assert(aln.get_sequence().size() == aln.get_base_qualities().size());
 
+  auto ensure_double_scratch = [](std::vector<double>& buffer, size_t size) -> double* {
+    if (buffer.size() < size)
+      buffer.resize(size);
+    return buffer.data();
+  };
+  auto ensure_int_scratch = [](std::vector<int>& buffer, size_t size) -> int* {
+    if (buffer.size() < size)
+      buffer.resize(size);
+    return buffer.data();
+  };
+
   // Extract probabilites related to base quality scores
-  double* base_log_wrong   = new double[aln.get_sequence().size()]; // log10(Prob(error))
-  double* base_log_correct = new double[aln.get_sequence().size()]; // log10(Prob(correct))
+  double* base_log_wrong   = ensure_double_scratch(base_log_wrong_buf_, aln.get_sequence().size()); // log10(Prob(error))
+  double* base_log_correct = ensure_double_scratch(base_log_correct_buf_, aln.get_sequence().size()); // log10(Prob(correct))
   const std::string& qual_string = aln.get_base_qualities();
   for (unsigned int j = 0; j < qual_string.size(); j++){
     base_log_wrong[j]   = base_quality->log_prob_error(qual_string[j]);
@@ -614,16 +622,18 @@ void HapAligner::process_read(const Alignment& aln, int seed_base, const BaseQua
   // Allocate scoring matrices based on the maximum haplotype size
   int max_hap_size          = fw_haplotype_->max_size();
   int num_hap_blocks        = fw_haplotype_->num_blocks();
-  double* l_match_matrix    = new double [seed_base*max_hap_size];
-  double* l_insert_matrix   = new double [seed_base*max_hap_size];
-  double* l_deletion_matrix = new double [seed_base*max_hap_size];
-  int* l_best_artifact_size = new int    [seed_base*num_hap_blocks];
-  int* l_best_artifact_pos  = new int    [seed_base*num_hap_blocks];
-  double* r_match_matrix    = new double [(base_seq_len-seed_base-1)*max_hap_size];
-  double* r_insert_matrix   = new double [(base_seq_len-seed_base-1)*max_hap_size];
-  double* r_deletion_matrix = new double [(base_seq_len-seed_base-1)*max_hap_size];
-  int* r_best_artifact_size = new int    [(base_seq_len-seed_base-1)*num_hap_blocks];
-  int* r_best_artifact_pos  = new int    [(base_seq_len-seed_base-1)*num_hap_blocks];
+  size_t left_len            = seed_base;
+  size_t right_len           = base_seq_len-seed_base-1;
+  double* l_match_matrix    = ensure_double_scratch(l_match_matrix_buf_, left_len*max_hap_size);
+  double* l_insert_matrix   = ensure_double_scratch(l_insert_matrix_buf_, left_len*max_hap_size);
+  double* l_deletion_matrix = ensure_double_scratch(l_deletion_matrix_buf_, left_len*max_hap_size);
+  int* l_best_artifact_size = ensure_int_scratch(l_best_artifact_size_buf_, left_len*num_hap_blocks);
+  int* l_best_artifact_pos  = ensure_int_scratch(l_best_artifact_pos_buf_, left_len*num_hap_blocks);
+  double* r_match_matrix    = ensure_double_scratch(r_match_matrix_buf_, right_len*max_hap_size);
+  double* r_insert_matrix   = ensure_double_scratch(r_insert_matrix_buf_, right_len*max_hap_size);
+  double* r_deletion_matrix = ensure_double_scratch(r_deletion_matrix_buf_, right_len*max_hap_size);
+  int* r_best_artifact_size = ensure_int_scratch(r_best_artifact_size_buf_, right_len*num_hap_blocks);
+  int* r_best_artifact_pos  = ensure_int_scratch(r_best_artifact_pos_buf_, right_len*num_hap_blocks);
   double max_LL             = -100000000;
 
   // Reverse bases and quality scores for the right flank
@@ -717,19 +727,6 @@ void HapAligner::process_read(const Alignment& aln, int seed_base, const BaseQua
   fw_haplotype_->reset();
   rev_haplotype_->reset();
 
-  // Deallocate arrays and scoring matrices
-  delete [] l_match_matrix;
-  delete [] l_insert_matrix;
-  delete [] l_deletion_matrix;
-  delete [] l_best_artifact_size;
-  delete [] l_best_artifact_pos;
-  delete [] r_match_matrix;
-  delete [] r_insert_matrix;
-  delete [] r_deletion_matrix;
-  delete [] r_best_artifact_size;
-  delete [] r_best_artifact_pos;
-  delete [] base_log_wrong;
-  delete [] base_log_correct;
 }
 
 AlignmentTrace* HapAligner::trace_optimal_aln(const Alignment& orig_aln, int seed_base, int best_haplotype, const BaseQuality* base_quality){

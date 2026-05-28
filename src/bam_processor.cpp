@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <chrono>
+#include <shared_mutex>
 
 #include "bam_processor.h"
 #include "adapter_trimmer.h"
@@ -705,10 +706,11 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   };
 
   
-  //one executor with pipeline_lines worker threads
-  size_t pipeline_lines = std::max<size_t>(1, 2*NUM_THREADS);
-  size_t executor_workers = std::max<size_t>(1, NUM_THREADS);
-  tf::Executor executor(executor_workers);
+  // Keep two in-flight pipeline lines per worker, while --threads controls
+  // the actual executor worker count.
+  size_t worker_threads = std::max<size_t>(1, NUM_THREADS);
+  size_t pipeline_lines = 2*worker_threads;
+  tf::Executor executor(worker_threads);
   tf::Taskflow taskflow;
   std::vector< std::unique_ptr<RegionWorkItem> > work_items(pipeline_lines);
   std::vector< std::unique_ptr<RegionResult> > results(pipeline_lines);
@@ -716,10 +718,29 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
   int merge_type = BamCramMultiReader::ORDER_ALNS_BY_FILE;
   size_t next_region = 0;
 
+  std::shared_mutex chrom_cache_mutex;
+  std::map<std::string, std::string> chrom_cache;
+  auto get_chrom_seq = [&](const std::string& chrom) -> const std::string* {
+    {
+      std::shared_lock<std::shared_mutex> lock(chrom_cache_mutex);
+      auto iter = chrom_cache.find(chrom);
+      if (iter != chrom_cache.end())
+        return &iter->second;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(chrom_cache_mutex);
+    auto insert_result = chrom_cache.emplace(chrom, std::string());
+    auto iter = insert_result.first;
+    if (insert_result.second) {
+      fasta_reader.get_sequence(chrom, iter->second);
+      assert(!iter->second.empty());
+    }
+    return &iter->second;
+  };
+
   std::vector<PipelineLineContext> contexts(pipeline_lines);
   for (size_t i = 0; i < pipeline_lines; i++){
     contexts[i].reader.reset(new BamCramMultiReader(bam_files, cram_fasta_path, merge_type));
-    contexts[i].fasta_reader.reset(new FastaReader(fasta_file));
     contexts[i].adapter_trimmer.reset(new AdapterTrimmer());
   }
 
@@ -769,13 +790,9 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
         return;
       }
 
-      if (region.chrom().compare(ctx.cur_chrom) != 0){
-        ctx.cur_chrom = region.chrom();
-        ctx.fasta_reader->get_sequence(ctx.cur_chrom, ctx.chrom_seq);
-        assert(ctx.chrom_seq.size() != 0);
-      }
+      const std::string* chrom_seq = get_chrom_seq(region.chrom());
 
-      if (region.start() < 50 || region.stop()+50 >= ctx.chrom_seq.size()){
+      if (region.start() < 50 || region.stop()+50 >= chrom_seq->size()){
         line_log << "Skipping region within 50bp of the end of the contig\n";
         result->log_text = line_log.str();
         results[pf.line()] = std::move(result);
@@ -784,7 +801,7 @@ void BamProcessor::process_regions(BamCramMultiReader& reader,
       }
 
       bool ok = make_region_work_item(*ctx.reader, *ctx.adapter_trimmer, rg_to_sample, rg_to_library, 
-              region, ctx.chrom_seq,
+              region, *chrom_seq,
               pass_writer, filt_writer, line_log, item) &&
               prepare_region_work_item(item, line_log);
       if (!ok) {

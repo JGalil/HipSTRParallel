@@ -496,14 +496,7 @@ class BamWriter {
     output_ = bgzf_open(path.c_str(), mode.c_str());
     if (output_ == NULL)
       printErrorAndDie("Failed to open BAM output file");
-
-    // ENABLE MULTI-THREADED BGZF COMPRESSION
-    // Offloads the zlib bottleneck from your Taskflow Serial stage. 
-    // Spawns 4 background threads with a queue of 64 compression tasks.
-    if (bgzf_mt(output_, 4, 64) != 0) {
-      printErrorAndDie("Failed to initialize multi-threading for BAM writer");
-    }
-
+    
     if (bam_hdr_write(output_, bam_header->header_) == -1)
       printErrorAndDie("Failed to write the BAM header to the output file");
   }

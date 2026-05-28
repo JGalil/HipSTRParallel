@@ -431,11 +431,12 @@ void GenotyperBamProcessor::write_region_result(const RegionResult& result) {
   process_timer_.add_time("Posterior computation", result.posterior_time);
   process_timer_.add_time("Alignment traceback",   result.aln_trace_time);
 
-  for (auto aln : result.passing_bam_records) {
-    write_passing_alignment(aln, pass_writer_);
+  for (const auto& aln : result.passing_bam_records) {
+    write_passing_alignment(const_cast<BamAlignment&>(aln), pass_writer_);
   }
-  for (auto rec : result.filtered_bam_records) {
-    write_filtered_alignment(rec.aln, rec.filter, filt_writer_);
+
+  for (const auto& rec : result.filtered_bam_records) {
+    write_filtered_alignment(const_cast<BamAlignment&>(rec.aln), rec.filter, filt_writer_);
   }
 
   if (!result.log_text.empty())
